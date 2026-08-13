@@ -1805,19 +1805,8 @@ function f_preset(i) {
 		_tgid = 0;
 
     if (channel_list.length == 0) {
-    
-        // Do not whitelist holds because it causes permanent changes to whitelisting
-       	//if (command == "hold")
-    	//	send_command("whitelist", _tgid);
-    
         send_command(command, _tgid);
-
-        
     } else {
-    
-    	//if (command == "hold")
-    	//	send_command("whitelist", _tgid, Number(channel_list[channel_index]));
-
         send_command(command, _tgid, Number(channel_list[channel_index]));
     }
 }
