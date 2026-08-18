@@ -1,5 +1,10 @@
 # This is the boatbod fork of op25.  
 
+## Docker / remote-SDR streaming
+For running OP25 in Docker against a remote `rtl_tcp` source and streaming
+decoded audio to a browser via Icecast, see
+[README-docker-streaming.md](README-docker-streaming.md).
+
 ## `rx.py` capabilities
 
 - P25 Conventional (single frequency)

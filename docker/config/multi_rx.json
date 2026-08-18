@@ -1,0 +1,57 @@
+{
+    "channels": [
+        {
+            "name": "Anderson Mountain Channel",
+            "device": "sdr0",
+            "trunking_sysname": "NC VIPER - Anderson Mountain",
+            "demod_type": "cqpsk",
+            "destination": "udp://audio-bridge:23456",
+            "meta_stream_name": "",
+            "excess_bw": 0.2,
+            "filter_type": "rc",
+            "if_rate": 24000,
+            "plot": "",
+            "symbol_rate": 4800,
+            "enable_analog": "off",
+            "whitelist": "",
+            "blacklist": "",
+            "crypt_keys": ""
+        }
+    ],
+    "devices": [
+        {
+            "args": "rtl_tcp=192.168.99.221:1234",
+            "gains": "LNA:40",
+            "name": "sdr0",
+            "offset": 0,
+            "ppm": -1,
+            "usable_bw_pct": 0.85,
+            "rate": 1000000,
+            "tunable": true
+        }
+    ],
+    "trunking": {
+        "module": "tk_p25.py",
+        "chans": [
+            {
+                "sysname": "NC VIPER - Anderson Mountain",
+                "nac": "0x1f0",
+                "control_channel_list": "769.80625,770.53125,773.45625,774.73125",
+                "whitelist": "",
+                "tgid_tags_file": "talkgroups.tsv",
+                "rid_tags_file": "",
+                "tdma_cc": true,
+                "crypt_behavior": 2
+            }
+        ]
+    },
+    "terminal": {
+        "module": "terminal.py",
+        "terminal_type": "http:0.0.0.0:8080",
+        "curses_plot_interval": 0.1,
+        "http_plot_interval": 1.0,
+        "http_plot_directory": "../www/images",
+        "tuning_step_large": 1200,
+        "tuning_step_small": 100
+    }
+}

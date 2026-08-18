@@ -613,11 +613,11 @@ void p25p2_tdma::handle_voice_frame(const uint8_t dibits[], int slot, int voice_
             tone_frame = true;
             mbe_err_cnt = 0;
         } else {                        // Tone Erasure with Frame Repeat
-            if ((++mbe_err_cnt < 4) && tone_frame) {
+            if ((++mbe_err_cnt < 12) && tone_frame) {
                 mbe_useLastMbeParms(&cur_mp, &prev_mp);
                 rc = 0;
             } else {
-                tone_frame = false;     // Mute audio output after 3 successive Frame Repeats
+                tone_frame = false;     // Mute audio output after 11 successive Frame Repeats
             }
         }
     } else {
@@ -625,16 +625,18 @@ void p25p2_tdma::handle_voice_frame(const uint8_t dibits[], int slot, int voice_
         if (rc == 0) {				// Voice Frame
             tone_frame = false;
             mbe_err_cnt = 0;
-        } else if ((++mbe_err_cnt < 4) && !tone_frame) {// Erasure with Frame Repeat per TIA-102.BABA.5.6
+        } else if ((++mbe_err_cnt < 12) && !tone_frame) {// Erasure with Frame Repeat per TIA-102.BABA.5.6
             mbe_useLastMbeParms(&cur_mp, &prev_mp);
             rc = 0;
         } else {
-            tone_frame = false;         // Mute audio output after 3 successive Frame Repeats
+            tone_frame = false;         // Mute audio output after 11 successive Frame Repeats
         }
     }
 
-    // Synthesize tones or speech as long as dequantization was successful and overall error rate is below threshold
-    if ((rc == 0) && (errs_mp.ER <= 0.096)) {
+    // Synthesize tones or speech as long as dequantization was successful and overall error rate is below threshold.
+    // Loosened from the upstream default of 0.096 -- on a marginal-signal link we'd rather hear degraded/noisy
+    // audio than have OP25 mute to silence; 0.30 still rejects frames that are effectively pure noise.
+    if ((rc == 0) && (errs_mp.ER <= 0.30)) {
         if (tone_frame) {
             software_decoder.decode_tone(tone_mp.ID, tone_mp.AD, &tone_mp.n);
             samples = software_decoder.audio();

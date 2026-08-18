@@ -609,6 +609,7 @@ class p25_rx_block (gr.top_block):
         self.target_freq = target_freq
         tune_freq = target_freq + self.options.calibration + self.options.offset + self.options.fine_tune
         r = self.src.set_center_freq(tune_freq)
+        sys.stderr.write("DIAG set_freq: target_freq(%d) tune_freq(%d) result(%s)\n" % (target_freq, tune_freq, r))
         self.demod.reset()      # reset gardner-costas loop
 
         if self.fft_sink:

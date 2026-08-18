@@ -1,3 +1,6 @@
 # Untracked files in op25 hierachy
 build/
 *.pyc
+
+# Docker streaming MVP - local secrets, never commit real passwords
+.env

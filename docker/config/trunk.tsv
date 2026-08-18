@@ -1,0 +1,2 @@
+"Sysname"	"Control Channel List"	"Offset"	"NAC"	"Modulation"	"TGID Tags File"	"Whitelist"	"Blacklist"	"Center Frequency"
+"NC VIPER - Anderson Mountain"	"774.73125"	"0"	"0x1f0"	"cqpsk"	"talkgroups.tsv"	""	""	""

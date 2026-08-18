@@ -1,0 +1,58 @@
+services:
+  op25:
+    build:
+      context: .
+      dockerfile: docker/op25/Dockerfile
+    restart: unless-stopped
+    environment:
+      SDR_HOST: ${SDR_HOST:?set SDR_HOST in .env to the Pi rtl_tcp LAN IP}
+      SDR_PORT: ${SDR_PORT:-1234}
+      SDR_SAMPLE_RATE: ${SDR_SAMPLE_RATE:-960000}
+      SDR_PPM: ${SDR_PPM:-0}
+      SDR_GAIN: ${SDR_GAIN:-}
+      TRUNK_CONF: trunk.tsv
+      AUDIO_BRIDGE_HOST: audio-bridge
+      AUDIO_UDP_PORT: ${AUDIO_UDP_PORT:-23456}
+      HTTP_PORT: 8080
+      LOG_VERBOSITY: ${LOG_VERBOSITY:-1}
+      ENABLE_TDMA_CC: ${ENABLE_TDMA_CC:-false}
+      ENABLE_PHASE2: ${ENABLE_PHASE2:-false}
+    volumes:
+      - ./docker/config/trunk.tsv:/op25/op25/gr-op25_repeater/apps/trunk.tsv:ro
+      - ./docker/config/talkgroups.tsv:/op25/op25/gr-op25_repeater/apps/talkgroups.tsv:ro
+    ports:
+      # HTTP status/terminal UI - LAN/Tailscale convenience only, not needed
+      # for the audio path to reach a browser.
+      - "${OP25_HTTP_HOST_PORT:-8080}:8080"
+    depends_on:
+      - audio-bridge
+
+  audio-bridge:
+    build:
+      context: .
+      dockerfile: docker/audio-bridge/Dockerfile
+    restart: unless-stopped
+    environment:
+      AUDIO_UDP_PORT: ${AUDIO_UDP_PORT:-23456}
+      PCM_TCP_PORT: 8090
+      ICECAST_HOST: icecast
+      ICECAST_PORT: 8000
+      ICECAST_MOUNT: ${ICECAST_MOUNT:-op25}
+      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:?set ICECAST_SOURCE_PASSWORD in .env}
+      AAC_BITRATE: ${AAC_BITRATE:-32k}
+    depends_on:
+      - icecast
+
+  icecast:
+    build:
+      context: .
+      dockerfile: docker/icecast/Dockerfile
+    restart: unless-stopped
+    environment:
+      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:?set ICECAST_SOURCE_PASSWORD in .env}
+      ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD:?set ICECAST_ADMIN_PASSWORD in .env}
+    ports:
+      # The only port that needs to be reachable outside the compose
+      # network. Bind to a Tailscale interface / firewall accordingly --
+      # never forward this on the public router.
+      - "${ICECAST_HOST_PORT:-8000}:8000"
