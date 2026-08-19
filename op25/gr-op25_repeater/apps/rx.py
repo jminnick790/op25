@@ -427,6 +427,13 @@ class p25_rx_block (gr.top_block):
         self.decoder.control(params)
 
     def configure_tdma(self, params):
+        sys.stderr.write("DIAG configure_tdma: freq(%s) tgid(%s) tdma(%s) tdma_state(%s)\n" % (params.get('freq'), params.get('tgid'), params.get('tdma'), self.tdma_state))
+        # Reset per-call decode-quality state on every channel change. Without
+        # this, p25p2_tdma's errs_mp.ER (see call_end() in p25p2_tdma.cc) is a
+        # long-running average across every call for the life of the process,
+        # which can accumulate on a marginal-signal link until it permanently
+        # mutes audio -- only a full process restart used to clear it.
+        self.decoder.control({'tuner': 0, 'cmd': 'call_end'})
         if params['tdma'] is not None and not self.options.phase2_tdma:
             sys.stderr.write("***TDMA request for frequency %d failed- phase2_tdma option not enabled" % params['freq'])
             return

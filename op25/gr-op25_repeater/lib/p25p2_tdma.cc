@@ -141,6 +141,14 @@ void p25p2_tdma::call_end() {
     reset_vb();
     d_tdma_slot_first_4v = -1;
     burst_type = -1;
+    // errs_mp.ER is a long-running exponential moving average (see p25p2_vf.cc)
+    // with no per-call reset of its own. On a marginal-signal link it can
+    // accumulate across many calls faster than it decays, permanently muting
+    // audio until the whole process restarts. Reset it here so each new call
+    // gets judged on its own merits instead of a stale cross-call average.
+    mbe_initErrParms(&errs_mp);
+    mbe_err_cnt = 0;
+    tone_frame = false;
 }
 
 void p25p2_tdma::crypt_reset() {
@@ -613,11 +621,11 @@ void p25p2_tdma::handle_voice_frame(const uint8_t dibits[], int slot, int voice_
             tone_frame = true;
             mbe_err_cnt = 0;
         } else {                        // Tone Erasure with Frame Repeat
-            if ((++mbe_err_cnt < 12) && tone_frame) {
+            if ((++mbe_err_cnt < 30) && tone_frame) {
                 mbe_useLastMbeParms(&cur_mp, &prev_mp);
                 rc = 0;
             } else {
-                tone_frame = false;     // Mute audio output after 11 successive Frame Repeats
+                tone_frame = false;     // Mute audio output after 29 successive Frame Repeats
             }
         }
     } else {
@@ -625,18 +633,19 @@ void p25p2_tdma::handle_voice_frame(const uint8_t dibits[], int slot, int voice_
         if (rc == 0) {				// Voice Frame
             tone_frame = false;
             mbe_err_cnt = 0;
-        } else if ((++mbe_err_cnt < 12) && !tone_frame) {// Erasure with Frame Repeat per TIA-102.BABA.5.6
+        } else if ((++mbe_err_cnt < 30) && !tone_frame) {// Erasure with Frame Repeat per TIA-102.BABA.5.6
             mbe_useLastMbeParms(&cur_mp, &prev_mp);
             rc = 0;
         } else {
-            tone_frame = false;         // Mute audio output after 11 successive Frame Repeats
+            tone_frame = false;         // Mute audio output after 29 successive Frame Repeats
         }
     }
 
     // Synthesize tones or speech as long as dequantization was successful and overall error rate is below threshold.
     // Loosened from the upstream default of 0.096 -- on a marginal-signal link we'd rather hear degraded/noisy
-    // audio than have OP25 mute to silence; 0.30 still rejects frames that are effectively pure noise.
-    if ((rc == 0) && (errs_mp.ER <= 0.30)) {
+    // audio than have OP25 mute to silence. Pushed further to 0.50 (coin-flip bit error rate) per direct listening
+    // feedback that the tighter 0.30 gate was still choppy; past this point frames are essentially pure noise.
+    if ((rc == 0) && (errs_mp.ER <= 0.50)) {
         if (tone_frame) {
             software_decoder.decode_tone(tone_mp.ID, tone_mp.AD, &tone_mp.n);
             samples = software_decoder.audio();
