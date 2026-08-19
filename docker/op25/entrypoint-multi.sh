@@ -1,18 +1,24 @@
 #!/bin/bash
-# Alternate entrypoint: runs multi_rx.py (JSON-config-driven, more actively
-# developed app) instead of rx.py (the CLI/trunk.tsv-driven legacy app used
-# by entrypoint.sh). Kept as a separate script/config so the working rx.py
-# setup is untouched -- invoke this one explicitly to try multi_rx.py:
+# Entrypoint for multi_rx.py (JSON-config-driven, more actively developed
+# app) instead of rx.py (the CLI/trunk.tsv-driven legacy app used by
+# entrypoint.sh).
 #
-#   docker compose run --rm --entrypoint /usr/local/bin/entrypoint-multi.sh op25
-#
-# multi_rx.json is currently a static config (not env-var templated like
-# entrypoint.sh) since this is an experimental side-by-side trial, not yet
-# the primary path.
+# Config source: if MULTI_RX_DB is set, config (systems/devices/channels)
+# is read from that SQLite DB, with talkgroup/whitelist/blacklist data
+# live-refreshable via the 'reload' UI command -- see docker/config/schema.sql
+# and apps/db_config.py. Otherwise, falls back to the static JSON file at
+# MULTI_RX_CONFIG (default multi_rx.json), unchanged from the original
+# experimental JSON-only setup.
 set -euo pipefail
 
 : "${MULTI_RX_CONFIG:=multi_rx.json}"
+: "${MULTI_RX_DB:=}"
 : "${LOG_VERBOSITY:=10}"
 
-echo "Starting multi_rx.py: ./multi_rx.py -c ${MULTI_RX_CONFIG} -v ${LOG_VERBOSITY}"
-exec ./multi_rx.py -c "${MULTI_RX_CONFIG}" -v "${LOG_VERBOSITY}"
+if [ -n "${MULTI_RX_DB}" ]; then
+    echo "Starting multi_rx.py: ./multi_rx.py --db ${MULTI_RX_DB} -v ${LOG_VERBOSITY}"
+    exec ./multi_rx.py --db "${MULTI_RX_DB}" -v "${LOG_VERBOSITY}"
+else
+    echo "Starting multi_rx.py: ./multi_rx.py -c ${MULTI_RX_CONFIG} -v ${LOG_VERBOSITY}"
+    exec ./multi_rx.py -c "${MULTI_RX_CONFIG}" -v "${LOG_VERBOSITY}"
+fi

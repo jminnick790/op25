@@ -32,6 +32,7 @@ from helper_funcs import *
 from log_ts import log_ts
 from gnuradio import gr
 import gnuradio.op25_repeater as op25_repeater
+import db_config
 
 #################
 
@@ -420,21 +421,35 @@ class p25_system(object):
 
         sys.stderr.write("%s [%s] Initializing P25 system\n" % (log_ts.get(), self.sysname))
 
-        if 'tgid_tags_file' in self.config and self.config['tgid_tags_file'] != "":
-            sys.stderr.write("%s [%s] reading system tgid_tags_file: %s\n" % (log_ts.get(), self.sysname, self.config['tgid_tags_file']))
-            self.read_tags_file(self.config['tgid_tags_file'])
+        # DB mode (config built by db_config.build_config_from_db()) carries
+        # these keys instead of file-path strings; JSON-fallback mode never
+        # sets them, so _db_path stays None and reload_from_db() is a no-op.
+        self._db_path = config.get('_db_path')
+        self._db_tag_set_id = config.get('_db_tag_set_id')
+        self._db_whitelist_id = config.get('_db_whitelist_id')
+        self._db_blacklist_id = config.get('_db_blacklist_id')
 
-        if 'rid_tags_file' in self.config and self.config['rid_tags_file'] != "":
-            sys.stderr.write("%s [%s] reading system rid_tags_file: %s\n" % (log_ts.get(), self.sysname, self.config['rid_tags_file']))
-            self.read_rids_file(self.config['rid_tags_file'])
+        if self._db_path is not None:
+            sys.stderr.write("%s [%s] reading talkgroups from DB tag_set_id=%s\n" % (log_ts.get(), self.sysname, self._db_tag_set_id))
+            self.talkgroups = db_config.load_talkgroups(self._db_path, self._db_tag_set_id)
+            self.blacklist = db_config.load_access_list(self._db_path, self._db_blacklist_id) if self._db_blacklist_id else {}
+            self.whitelist = db_config.load_access_list(self._db_path, self._db_whitelist_id) if self._db_whitelist_id else None
+        else:
+            if 'tgid_tags_file' in self.config and self.config['tgid_tags_file'] != "":
+                sys.stderr.write("%s [%s] reading system tgid_tags_file: %s\n" % (log_ts.get(), self.sysname, self.config['tgid_tags_file']))
+                self.read_tags_file(self.config['tgid_tags_file'])
 
-        if 'blacklist' in self.config and self.config['blacklist'] != "":
-            sys.stderr.write("%s [%s] reading system blacklist file: %s\n" % (log_ts.get(), self.sysname, self.config['blacklist']))
-            self.blacklist = get_int_dict(self.config['blacklist'], self.sysname)
+            if 'rid_tags_file' in self.config and self.config['rid_tags_file'] != "":
+                sys.stderr.write("%s [%s] reading system rid_tags_file: %s\n" % (log_ts.get(), self.sysname, self.config['rid_tags_file']))
+                self.read_rids_file(self.config['rid_tags_file'])
 
-        if 'whitelist' in self.config and self.config['whitelist'] != "":
-            sys.stderr.write("%s [%s] reading system whitelist file: %s\n" % (log_ts.get(), self.sysname, self.config['whitelist']))
-            self.whitelist = get_int_dict(self.config['whitelist'], self.sysname)
+            if 'blacklist' in self.config and self.config['blacklist'] != "":
+                sys.stderr.write("%s [%s] reading system blacklist file: %s\n" % (log_ts.get(), self.sysname, self.config['blacklist']))
+                self.blacklist = get_int_dict(self.config['blacklist'], self.sysname)
+
+            if 'whitelist' in self.config and self.config['whitelist'] != "":
+                sys.stderr.write("%s [%s] reading system whitelist file: %s\n" % (log_ts.get(), self.sysname, self.config['whitelist']))
+                self.whitelist = get_int_dict(self.config['whitelist'], self.sysname)
 
         if 'band_plan' in self.config:
             band_plan = self.config['band_plan']
@@ -459,6 +474,23 @@ class p25_system(object):
         for f in cc_list.split(','):
             self.cc_list.append(get_frequency(f))
         self.next_cc()
+
+    def reload_from_db(self):
+        if self._db_path is None:
+            return
+        if self._db_tag_set_id is not None:
+            fresh = db_config.load_talkgroups(self._db_path, self._db_tag_set_id)
+            with self.talkgroups_mutex:
+                self.talkgroups.clear()
+                self.talkgroups.update(fresh)   # in-place: p25_receiver holds a reference to this
+                                                 # same dict object, so no cascade call is needed for tags
+        self.blacklist = db_config.load_access_list(self._db_path, self._db_blacklist_id) if self._db_blacklist_id else {}
+        self.whitelist = db_config.load_access_list(self._db_path, self._db_whitelist_id) if self._db_whitelist_id else None
+        sys.stderr.write("%s [%s] reloaded talkgroups/blacklist/whitelist from DB\n" % (log_ts.get(), self.sysname))
+        if self.rx_ctl is not None and self.sysname in self.rx_ctl.systems:
+            for rx in self.rx_ctl.systems[self.sysname]['receivers']:
+                rx.load_bl_wl()   # blacklist/whitelist get REASSIGNED (None<->dict), unlike talkgroups,
+                                   # so each receiver must re-fetch via load_bl_wl() rather than mutate-in-place
 
     def set_debug(self, dbglvl):
         self.debug = dbglvl
@@ -2360,9 +2392,10 @@ class p25_receiver(object):
             elif data > 0:
                 self.add_blacklist(int(data))
         elif cmd == 'reload':
+            self.system.reload_from_db()   # refreshes system-level tags/bl/wl from DB; no-op in JSON-fallback mode
             self.blacklist = {}
             self.whitelist = None
-            self.load_bl_wl()
+            self.load_bl_wl()              # re-reads channel-level files, or falls back to system.get_blacklist()/get_whitelist()
 
     def process_qmsg(self, msg, curr_time):
         updated = 0

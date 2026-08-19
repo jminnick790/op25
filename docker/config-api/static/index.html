@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>OP25 Config</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>OP25 Config</h1>
+<nav>
+  <button data-tab="systems" class="active">Systems</button>
+  <button data-tab="talkgroups">Talkgroups</button>
+  <button data-tab="lists">Access Lists</button>
+</nav>
+
+<section id="tab-systems" class="active">
+  <div class="toolbar">
+    <input id="sys-search" class="search" placeholder="Search systems (name, NAC, notes)..." oninput="filterTable('systems-table', this.value)">
+    <button class="toggle-add" onclick="toggleAdd('sys-add')">+ Add System</button>
+  </div>
+  <div class="add-row" id="sys-add">
+    <div class="field"><label>Sysname</label><input id="sys-sysname"></div>
+    <div class="field"><label>NAC</label><input id="sys-nac" value="0x0" style="width:5em"></div>
+    <div class="field"><label>Control Channel List</label><input id="sys-ccl" style="width:18em"></div>
+    <div class="field"><label>Tag Set</label><select id="sys-tagset"></select></div>
+    <div class="field"><label>Blacklist</label><select id="sys-blacklist"></select></div>
+    <div class="field"><label>Notes</label><input id="sys-notes" style="width:16em"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSystem()">Add</button></div>
+  </div>
+  <p class="hint">Drag rows by the handle to reorder.</p>
+  <div class="table-wrap">
+  <table id="systems-table">
+    <colgroup>
+      <col style="width:3%"><col style="width:15%"><col style="width:6%"><col style="width:18%">
+      <col style="width:9%"><col style="width:11%"><col style="width:6%">
+      <col style="width:20%"><col style="width:12%">
+    </colgroup>
+    <thead><tr><th></th><th>Sysname</th><th>NAC</th><th class="truncate">Control Channels</th><th>Tag Set</th><th>Blacklist</th><th>Active</th><th class="truncate">Notes</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section id="tab-talkgroups">
+  <div class="toolbar">
+    <select id="tgset-picker" class="tgset-picker" onchange="loadTalkgroups()"></select>
+    <input id="tg-search" class="search" placeholder="Search talkgroups (TGID, name, or group)..." oninput="filterTable('talkgroups-table', this.value)">
+    <button class="toggle-add" onclick="toggleAdd('tg-add')">+ Add Talkgroup</button>
+    <button class="toggle-add" onclick="toggleAdd('cat-manage')">Manage Groups</button>
+  </div>
+  <div class="add-row" id="tg-add">
+    <div class="field"><label>TGID</label><input id="tg-tgid" type="number" style="width:7em"></div>
+    <div class="field"><label>Name</label><input id="tg-name" style="width:18em"></div>
+    <div class="field"><label>Group</label><select id="tg-category"></select></div>
+    <div class="field"><label>Priority</label><input id="tg-prio" type="number" style="width:5em"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createTalkgroup()">Add</button></div>
+  </div>
+  <div class="add-row" id="cat-manage">
+    <p class="hint" style="margin-top:0">Rename a group and every talkgroup using it updates at once. Deleting a group just clears it from those talkgroups.</p>
+    <div class="table-wrap">
+    <table id="categories-table">
+      <colgroup><col style="width:60%"><col style="width:20%"><col style="width:20%"></colgroup>
+      <thead><tr><th>Name</th><th># Talkgroups</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    </div>
+    <div class="field"><label>New Group Name</label><input id="new-cat-name" style="width:16em"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createCategory()">Add Group</button></div>
+  </div>
+  <div class="table-wrap">
+  <table id="talkgroups-table">
+    <colgroup><col style="width:9%"><col style="width:38%"><col style="width:28%"><col style="width:10%"><col style="width:15%"></colgroup>
+    <thead><tr>
+      <th class="sortable" data-col="0" data-type="num">TGID</th>
+      <th class="sortable" data-col="1" data-type="text">Name</th>
+      <th class="sortable" data-col="2" data-type="text">Group</th>
+      <th class="sortable" data-col="3" data-type="num">Priority</th>
+      <th></th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section id="tab-lists">
+  <div class="toolbar">
+    <select id="list-picker" class="tgset-picker" onchange="loadListEntries()"></select>
+    <button class="toggle-add" onclick="toggleAdd('entry-add')">+ Add Entry</button>
+    <button class="toggle-add" onclick="toggleAdd('list-add')">+ New List</button>
+  </div>
+  <div class="add-row" id="entry-add">
+    <div class="field"><label>TGID</label><input id="entry-tgid" type="number" style="width:7em"></div>
+    <div class="field"><label>TGID End (range, optional)</label><input id="entry-tgid-end" type="number" style="width:7em"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createListEntry()">Add</button></div>
+  </div>
+  <div class="add-row" id="list-add">
+    <div class="field"><label>New List Name</label><input id="new-list-name" style="width:14em"></div>
+    <div class="field"><label>Type</label>
+      <select id="new-list-type"><option value="blacklist">blacklist</option><option value="whitelist">whitelist</option></select>
+    </div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createAccessList()">Add</button></div>
+  </div>
+  <div class="table-wrap">
+  <table id="lists-table">
+    <colgroup><col style="width:20%"><col style="width:20%"><col style="width:60%"></colgroup>
+    <thead><tr><th>TGID</th><th>TGID End</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>

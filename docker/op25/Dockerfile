@@ -49,9 +49,10 @@ RUN echo /usr/bin/python3 > /op25/op25/gr-op25_repeater/apps/op25_python && \
 WORKDIR /op25/op25/gr-op25_repeater/apps
 
 COPY docker/op25/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY docker/op25/entrypoint-multi.sh /usr/local/bin/entrypoint-multi.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-multi.sh
 
-# HTTP status/terminal interface
-EXPOSE 8080
+# HTTP status/terminal interface, WebSocket audio (multi_rx.py only)
+EXPOSE 8080 8081
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint-multi.sh"]

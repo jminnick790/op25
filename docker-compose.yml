@@ -3,23 +3,13 @@ services:
     build:
       context: .
       dockerfile: docker/op25/Dockerfile
+    container_name: op25   # stable name needed by config-api's docker.sock restart call
     restart: unless-stopped
     environment:
-      SDR_HOST: ${SDR_HOST:?set SDR_HOST in .env to the Pi rtl_tcp LAN IP}
-      SDR_PORT: ${SDR_PORT:-1234}
-      SDR_SAMPLE_RATE: ${SDR_SAMPLE_RATE:-960000}
-      SDR_PPM: ${SDR_PPM:-0}
-      SDR_GAIN: ${SDR_GAIN:-}
-      TRUNK_CONF: trunk.tsv
-      AUDIO_BRIDGE_HOST: audio-bridge
-      AUDIO_UDP_PORT: ${AUDIO_UDP_PORT:-23456}
-      HTTP_PORT: 8080
+      MULTI_RX_DB: /data/op25.db
       LOG_VERBOSITY: ${LOG_VERBOSITY:-1}
-      ENABLE_TDMA_CC: ${ENABLE_TDMA_CC:-false}
-      ENABLE_PHASE2: ${ENABLE_PHASE2:-false}
     volumes:
-      - ./docker/config/trunk.tsv:/op25/op25/gr-op25_repeater/apps/trunk.tsv:ro
-      - ./docker/config/talkgroups.tsv:/op25/op25/gr-op25_repeater/apps/talkgroups.tsv:ro
+      - op25-config-db:/data
     ports:
       # HTTP status/terminal UI - LAN/Tailscale convenience only, not needed
       # for the audio path to reach a browser.
@@ -61,3 +51,28 @@ services:
       # network. Bind to a Tailscale interface / firewall accordingly --
       # never forward this on the public router.
       - "${ICECAST_HOST_PORT:-8000}:8000"
+
+  config-api:
+    build:
+      context: .
+      dockerfile: docker/config-api/Dockerfile
+    restart: unless-stopped
+    environment:
+      OP25_DB_PATH: /data/op25.db
+      OP25_HTTP_URL: http://op25:8080/
+      OP25_CONTAINER_NAME: op25
+    volumes:
+      - op25-config-db:/data
+      # Grants this container root-equivalent control of the Docker host, so
+      # it can restart op25 after system/device/channel edits (which always
+      # require a restart -- see docker/config/schema.sql). Accepted
+      # tradeoff for a home-server deployment; do not expose this service's
+      # port to the open internet.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "${CONFIG_API_HOST_PORT:-8091}:8091"
+    depends_on:
+      - op25
+
+volumes:
+  op25-config-db:

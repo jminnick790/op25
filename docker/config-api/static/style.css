@@ -1,0 +1,73 @@
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #1a1d21;
+    color: #d8dadd;
+    margin: 0;
+    padding: 1rem 1.25rem;
+    font-size: 0.8rem;
+}
+h1 { font-size: 1rem; margin: 0 0 0.6rem; }
+nav { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
+nav button {
+    background: #2a2e33; color: #d8dadd; border: 1px solid #3a3f45;
+    padding: 0.3rem 0.7rem; border-radius: 5px; cursor: pointer; font-size: 0.78rem;
+}
+nav button.active { background: #3a6df0; border-color: #3a6df0; color: #fff; }
+section { display: none; }
+section.active { display: block; }
+.table-wrap { overflow-x: auto; margin-bottom: 0.5rem; }
+table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 0.76rem; table-layout: fixed; }
+th, td { text-align: left; padding: 0.2rem 0.5rem; border-bottom: 1px solid #2a2e33; }
+th { color: #9aa0a6; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { color: #d8dadd; }
+th.sort-asc::after { content: " \25B2"; }
+th.sort-desc::after { content: " \25BC"; }
+tr:hover { background: #22262b; }
+td.truncate, th.truncate {
+    max-width: 0; /* forces table-layout:fixed columns to actually clip instead of growing */
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default;
+}
+td.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.72rem; }
+input, select, textarea {
+    background: #2a2e33; color: #d8dadd; border: 1px solid #3a3f45;
+    border-radius: 4px; padding: 0.2rem 0.4rem; font-size: 0.76rem;
+}
+button.action {
+    background: #2a2e33; color: #d8dadd; border: 1px solid #3a3f45;
+    border-radius: 4px; padding: 0.15rem 0.5rem; cursor: pointer; font-size: 0.72rem; margin-right: 0.2rem;
+}
+button.action.primary { background: #3a6df0; border-color: #3a6df0; color: #fff; }
+button.action.danger { background: #4a2226; border-color: #6b2f34; color: #ff9494; }
+button.action:disabled { opacity: 0.4; cursor: not-allowed; }
+.badge { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 8px; font-size: 0.68rem; }
+.badge.active { background: #1f4d2e; color: #7ee7a0; }
+.badge.inactive { background: #2a2e33; color: #7a7f85; }
+
+.toolbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.search {
+    flex: 1 1 auto; max-width: 22em; background: #2a2e33; color: #d8dadd; border: 1px solid #3a3f45;
+    border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.76rem;
+}
+.hint { color: #6e7480; font-size: 0.68rem; margin: 0.2rem 0 0.3rem; }
+tr[draggable="true"] { cursor: grab; }
+tr.drag-over { border-top: 2px solid #3a6df0; }
+td.drag-handle { color: #6e7480; text-align: center; user-select: none; }
+
+.toggle-add {
+    background: none; border: 1px dashed #3a3f45; color: #9aa0a6;
+    padding: 0.2rem 0.6rem; border-radius: 5px; cursor: pointer; font-size: 0.72rem;
+}
+.add-row {
+    display: none; margin-top: 0.4rem; padding: 0.5rem 0.6rem; background: #22262b; border-radius: 6px;
+}
+.add-row.open { display: block; }
+.add-row label { display: block; font-size: 0.65rem; color: #9aa0a6; margin-bottom: 0.1rem; }
+.add-row .field { display: inline-block; margin-right: 0.5rem; margin-bottom: 0.3rem; vertical-align: top; }
+
+#toast {
+    position: fixed; bottom: 1rem; right: 1rem; background: #2a2e33; border: 1px solid #3a3f45;
+    border-radius: 6px; padding: 0.5rem 0.9rem; font-size: 0.78rem; display: none;
+}
+#toast.error { border-color: #6b2f34; color: #ff9494; }
+select.tgset-picker { margin-bottom: 0.4rem; }

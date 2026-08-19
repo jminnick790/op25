@@ -48,6 +48,7 @@ import sys
 import threading
 import time
 import json
+import db_config
 import traceback
 import osmosdr
 import importlib
@@ -1047,6 +1048,7 @@ class rx_main(object):
         # command line argument parsing
         parser = OptionParser(option_class=eng_option)
         parser.add_option("-c", "--config-file", type="string", default=None, help="specify config file name")
+        parser.add_option("--db", type="string", default=None, help="path to SQLite config DB (overrides --config-file; also settable via MULTI_RX_DB env var)")
         parser.add_option("-v", "--verbosity", type="int", default=0, help="message debug level")
         parser.add_option("-p", "--pause", action="store_true", default=False, help="block on startup")
         parser.add_option("-d", "--dev-mode", action="store_true", default=False, help="enable developer mode")
@@ -1066,7 +1068,11 @@ class rx_main(object):
             else:
                 raw_input("Press 'Enter' to continue...")
 
-        if options.config_file == '-':
+        db_path = options.db or os.environ.get('MULTI_RX_DB')
+        if db_path:
+            sys.stderr.write("Loading config from SQLite DB: %s\n" % db_path)
+            config = db_config.build_config_from_db(db_path)
+        elif options.config_file == '-':
             config = json.loads(sys.stdin.read())
         else:
             if options.config_file is None:
