@@ -30,10 +30,13 @@ sleep 2
 
 echo "Starting ffmpeg -> icecast://${ICECAST_HOST}:${ICECAST_PORT}/${ICECAST_MOUNT}"
 while "${running}"; do
+    # -fflags nobuffer + -flush_packets 1: don't let ffmpeg's own input/output
+    # buffering add to end-to-end latency on top of Icecast's queue-size.
     ffmpeg -hide_banner -loglevel warning \
+        -fflags nobuffer \
         -f s16le -ar 8000 -ac 1 -i "tcp://127.0.0.1:${PCM_TCP_PORT}" \
         -c:a aac -b:a "${AAC_BITRATE}" \
-        -content_type audio/aac -f adts \
+        -content_type audio/aac -f adts -flush_packets 1 \
         "icecast://source:${ICECAST_SOURCE_PASSWORD}@${ICECAST_HOST}:${ICECAST_PORT}/${ICECAST_MOUNT}" &
     FFMPEG_PID=$!
     wait "${FFMPEG_PID}" || true

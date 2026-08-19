@@ -8,18 +8,23 @@
         <!-- Icecast has no dedicated format handler for raw ADTS AAC, so it
              falls back to a generic byte-relay handler that (empirically)
              waits for something close to a full queue-size buffer before it
-             starts serving a newly-connected listener. At the low bitrate
-             an 8kHz mono voice stream needs (see AAC_BITRATE), the default
-             512KB queue-size means new listeners wait ~2 minutes before
-             hearing anything. Keeping this small trades a bit of
-             resilience to slow listeners for a live stream that actually
-             starts promptly. -->
-        <queue-size>32768</queue-size>
+             starts serving a newly-connected listener. queue-size isn't just
+             a startup knob either: it's how much audio Icecast holds
+             in-flight for an ALREADY-connected listener, so it sets a floor
+             on steady-state latency behind live, not just time-to-first-audio.
+             At AAC_BITRATE's ~4000 bytes/sec, the previous 32768-byte queue
+             meant ~8s of audio sitting buffered at all times (confirmed
+             against a real ~10s TG-to-audio delay). 8192 bytes is ~2s of
+             slack, enough to absorb normal jitter on a LAN/Tailscale
+             listener without reintroducing multi-second lag. Shrink further
+             (and shrink burst-size to match) if you want it tighter still,
+             at the cost of less resilience to a slow/bursty listener. -->
+        <queue-size>8192</queue-size>
         <client-timeout>30</client-timeout>
         <header-timeout>15</header-timeout>
         <source-timeout>10</source-timeout>
         <burst-on-connect>1</burst-on-connect>
-        <burst-size>16384</burst-size>
+        <burst-size>4096</burst-size>
     </limits>
 
     <authentication>

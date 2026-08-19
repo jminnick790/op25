@@ -1,0 +1,762 @@
+21	Mecklenburg Parks Security
+27	Mecklenburg Parks South Ops
+29	Mecklenburg Jail Arrest Processing Center Warrant 1
+31	Mecklenburg Jail Intake
+41	Mecklenburg Event 1 - EOC
+43	Mecklenburg Event 2 - Fire
+45	Mecklenburg Event 3 - EMS
+47	Mecklenburg Event 4 - Police
+49	Mecklenburg Event 5 - Public Works 1
+51	Mecklenburg Event 6 - Public Works 2
+53	Mecklenburg Event 7 - Charlotte Fire
+55	Mecklenburg Event 8 - Volunteer Fire
+57	Mecklenburg Event 9 - North Mecklenburg 1
+59	Mecklenburg Event 10 - North Mecklenburg 2
+61	Mecklenburg Event 11 - South Towns 1
+63	Mecklenburg Police Dispatch
+65	Mecklenburg Police Patrol 1
+67	Mecklenburg Police Patrol 2
+69	Mecklenburg Police Investigations
+73	Mecklenburg Police Tactical 1
+75	Mecklenburg Police Tactical 2
+123	NC Highway Patrol NCSHP 2
+129	Mecklenburg Police Mutual Aid
+131	Mecklenburg Fire Mutual Aid
+133	Mecklenburg EMS Mutual Aid
+135	Mecklenburg Public Works Mutual Aid
+147	NC Highway Patrol NCSHP H5
+153	Mecklenburg Event 12 - South Towns 2
+155	Mecklenburg Event 13 - Sheriff 1
+157	Mecklenburg Event 14 - Sheriff 2
+159	Mecklenburg Event 15 - Charlotte Fire
+161	Mecklenburg Event 16 - Charlotte Fire
+185	Mecklenburg Emergency 3
+187	Systemwide Mutual Aid Bridge 4 (Inter-Dispatch Systemwide)
+189	Mecklenburg Jail Central 1
+207	Mecklenburg Bus Operations 1
+209	Mecklenburg Bus Operations 2
+211	Mecklenburg Bus Operations 3
+229	Mecklenburg Jail Central 3
+231	Mecklenburg Jail Central 4
+237	Mecklenburg Jail Work Restitution
+271	Systemwide Hospitals CMC Disp 1
+273	Systemwide Hospitals CMC Disp 2
+275	Systemwide Hospitals Atrium Med 1
+278	Systemwide Hospitals Atrium Health Pediatrics
+279	Systemwide Hospitals Atrium Panther
+287	Systemwide Hospitals Atrium Health LZ 1
+289	Systemwide Hospitals Atrium Health LZ 2
+299	Mecklenburg Event 1
+301	Mecklenburg Event 2
+303	Mecklenburg Event 3
+305	Mecklenburg Police Common
+307	Mecklenburg Police Patrol 1
+309	Mecklenburg Police Patrol 2
+311	Mecklenburg Police Conference
+313	Mecklenburg Police Service
+315	Mecklenburg Police Training
+317	Mecklenburg Library
+319	Mecklenburg Library Administration
+321	Mecklenburg Library Security
+323	Mecklenburg Library Conference
+325	Mecklenburg Queens University Security
+337	Mecklenburg Charlotte-Mecklenburg Government Center Security
+339	Mecklenburg Charlotte-Mecklenburg Government Center Supervisors
+357	Mecklenburg Police 3
+403	Mecklenburg EMS Dispatch
+405	Mecklenburg Operations 14
+407	Mecklenburg Operations 15
+409	Mecklenburg Operations 16
+411	Mecklenburg Operations 17
+413	Mecklenburg Operations 6
+415	Mecklenburg EMS Administration
+417	Mecklenburg Operations 18
+421	Systemwide Hospitals Presbyterian Pediatric
+423	Mecklenburg Operations 19
+425	Mecklenburg Operations 20
+427	Mecklenburg Operations 21
+429	Mecklenburg Operations 22
+431	Systemwide Hospitals Novant Health Ballantyne
+433	Systemwide Hospitals Atrium Health Lake Norman
+439	Systemwide Hospitals Atrium Health Ballantyne
+445	Mecklenburg Police
+453	Mecklenburg Fire Dispatch
+455	Mecklenburg Operations 12
+457	Mecklenburg Operations 3
+459	Mecklenburg Operations 4
+461	Mecklenburg Operations 5
+463	Mecklenburg Operations 13
+467	Mecklenburg Conference
+475	Mecklenburg Trash/Recycling Collection
+479	Mecklenburg Trash/Recycling Collection
+489	Mecklenburg Trash/Recycling Collection
+515	Mecklenburg Emergency
+517	Mecklenburg Emergency
+523	Mecklenburg Emergency
+527	Mecklenburg Steele Creek Division Conference
+529	Mecklenburg Steele Creek Division Dispatch
+531	Mecklenburg Westover Division Dispatch
+533	Mecklenburg Freedom Division Dispatch
+535	Mecklenburg Westover Division Conference
+537	Systemwide Mutual Aid Air ASO - Helicopter Calling
+539	Mecklenburg Freedom Division Conference
+541	Mecklenburg Providence Division Conference
+543	Mecklenburg Providence Division Dispatch
+545	Mecklenburg South Division Dispatch
+547	Mecklenburg Independence Division Dispatch
+549	Mecklenburg South Division Conference
+551	Mecklenburg Independence Division Conference
+553	Mecklenburg Providence Division Tactical
+555	Mecklenburg North Division Conference
+557	Mecklenburg North Division Dispatch
+559	Mecklenburg Eastway Division Dispatch
+561	Mecklenburg Hickory Grove Division Dispatch
+563	Mecklenburg Eastway Division Conference
+565	Mecklenburg Hickory Grove Division Conference
+567	Mecklenburg North Division Tactical
+583	Mecklenburg SWAT 1
+585	Mecklenburg SWAT 2
+587	Mecklenburg SWAT 3
+589	Mecklenburg CEU 1
+591	Mecklenburg CEU 2
+593	Mecklenburg CEU 3
+594	Mecklenburg CEU 4
+597	Mecklenburg Unknown Encrypted
+599	Mecklenburg Unknown Encrypted
+657	Mecklenburg Central Division Conference
+659	Mecklenburg Central Division Dispatch
+661	Mecklenburg Metro Division Dispatch
+663	Mecklenburg North Tryon Division Dispatch
+665	Mecklenburg Metro Division Conference
+667	Mecklenburg North Tryon Division Conference
+669	Mecklenburg Central Division Street Crimes Unit
+675	Mecklenburg VCAT 1
+677	Mecklenburg VCAT 2
+681	Mecklenburg VCAT 3
+685	Mecklenburg University Division Conference
+687	Mecklenburg University Division Dispatch
+693	Mecklenburg University Division Tactical
+697	Mecklenburg University Division Street Crimes Unit
+731	Mecklenburg Main Dispatch
+735	Mecklenburg Light Rail Operations 1
+737	Mecklenburg Light Rail Operations 2
+739	Mecklenburg Light Rail Operations 3
+741	Mecklenburg Light Rail Operations 4
+759	Mecklenburg Operations 7
+761	Mecklenburg Operations 8
+763	Mecklenburg Operations 9
+765	Mecklenburg Operations 10
+767	Mecklenburg Operations 11
+769	Mecklenburg EMS Non-Emergency Transport
+771	Mecklenburg EMS Conference
+773	Mecklenburg EMS Logistics
+787	Systemwide Hospitals Atrium Steele Creek
+789	Systemwide Hospitals Atrium Huntersville
+791	Systemwide Hospitals Atrium CMC Main
+793	Systemwide Hospitals Presbyterian Main
+795	Systemwide Hospitals Atrium University
+797	Systemwide Hospitals Atrium Pineville
+799	Systemwide Hospitals Atrium Health Mercy
+801	Systemwide Hospitals Presbyterian Matthews
+803	Systemwide Hospitals Presbyterian Huntersville
+805	Systemwide Hospitals Lake Norman Regional Medical Center
+809	Systemwide Hospitals Novant Mint Hill Medical Center
+811	Systemwide Hospitals Union Memorial
+813	Systemwide Hospitals Atrium South Park
+815	Mecklenburg Central Division Tactical
+817	Mecklenburg North Tryon Division Tactical
+819	Mecklenburg Metro Division Tactical
+821	Mecklenburg Metro Division Street Crimes Unit
+823	Mecklenburg Eastway Division Tactical
+825	Mecklenburg Eastway Division Street Crimes Unit
+827	Mecklenburg North Tryon Division Street Crimes Unit
+829	Mecklenburg North Division Street Crimes Unit
+831	Mecklenburg Hickory Grove Division Tactical
+833	Mecklenburg Hickory Grove Division Street Crimes Unit
+835	Mecklenburg Providence Division Street Crimes Unit
+837	Mecklenburg Independence Division Tactical
+839	Mecklenburg Independence Division Street Crimes Unit
+841	Mecklenburg Steele Creek Division Tactical
+843	Mecklenburg Steele Creek Division Street Crimes Unit
+845	Mecklenburg South Division Tactical
+847	Mecklenburg South Division Street Crimes Unit
+849	Mecklenburg Westover Division Tactical
+851	Mecklenburg Westover Division Street Crimes Unit
+853	Mecklenburg Freedom Division Tactical
+855	Mecklenburg Freedom Division Street Crimes Unit
+869	Mecklenburg Unknown Encrypted
+907	Mecklenburg CMPD Tac/Surv
+919	Mecklenburg Police Academy 1
+920	Mecklenburg Police Academy 2
+921	Mecklenburg Police Academy 3
+947	Mecklenburg Police Conference 1
+951	Mecklenburg Police Investigations
+953	Mecklenburg Police Tac 1
+983	Mecklenburg Fire Ops 1I
+985	Mecklenburg Fire Ops 1J
+987	Mecklenburg Fire Ops 1K
+991	Mecklenburg Fire Conference 1
+993	Mecklenburg Jail Arrest Processing Center 1
+999	Mecklenburg Courts 1
+1001	Mecklenburg Courts 2
+1003	Mecklenburg Courts 3
+1005	Mecklenburg Courts 4
+1007	Mecklenburg Courts 5
+1027	Mecklenburg Fire Alarm
+1029	Mecklenburg Fire Ops 1B
+1031	Mecklenburg Fire Ops 1C
+1033	Mecklenburg Fire Ops 1D
+1035	Mecklenburg Fire Ops 1E
+1037	Mecklenburg Fire Ops 1F
+1039	Mecklenburg Fire Ops 1G
+1041	Mecklenburg Fire Ops 1H
+1057	Mecklenburg Fire Ops 2B
+1059	Mecklenburg Fire Ops 2C
+1061	Mecklenburg Fire Ops 2D
+1063	Mecklenburg Fire Ops 2E
+1065	Mecklenburg Fire Ops 2F
+1067	Mecklenburg Fire Ops 2G
+1069	Mecklenburg Fire Ops 2H
+1071	Mecklenburg Fire Ops 2I
+1073	Mecklenburg Fire Ops 2J
+1075	Mecklenburg Fire Ops 2K
+1077	Mecklenburg Fire Conference 2
+1085	Mecklenburg Fire Training 5B
+1087	Mecklenburg Fire Training 5C
+1089	Mecklenburg Fire Training 5D
+1091	Mecklenburg Fire Training 5E
+1093	Mecklenburg Fire Training 5F
+1095	Mecklenburg Fire Training 5G
+1097	Mecklenburg Fire Training 5H
+1099	Mecklenburg Fire Emergency Zone 1
+1101	Mecklenburg Fire Emergency Zone 2
+1103	Mecklenburg Fire Emergency Zone 5
+1105	Mecklenburg Fire Emergency Zone 6
+1107	Mecklenburg Fire Emergency Zone 7
+1109	Mecklenburg Fire Logistics 10
+1111	Mecklenburg Fire Arson 10
+1113	Mecklenburg Fire Chiefs 10
+1115	Mecklenburg Fire Prevention 10
+1117	Mecklenburg Fire Communications 10
+1119	Mecklenburg Fire Conference 10
+1147	Systemwide Mutual Aid Regional Emergency
+1149	Systemwide Mutual Aid Regional EMS
+1151	Systemwide Mutual Aid Regional Operations 4
+1153	Systemwide Mutual Aid Regional Fire 1
+1155	Systemwide Mutual Aid Regional Fire 2
+1157	Systemwide Mutual Aid Regional Fire 3
+1159	Systemwide Mutual Aid Regional Law 1
+1161	Systemwide Mutual Aid Regional Law 2
+1165	Mecklenburg Escorts 1
+1167	Mecklenburg Escorts 2
+1169	Mecklenburg Escorts 3
+1171	Mecklenburg Escorts 4
+1173	Mecklenburg Escorts 5
+1175	Mecklenburg Escorts 6
+1177	Mecklenburg Escorts 7
+1179	Mecklenburg Escorts 8
+1181	Mecklenburg Escorts 9
+1183	Mecklenburg Escorts 10
+1201	Mecklenburg Jail North 1
+1205	Mecklenburg Jail North 3
+1225	Systemwide Mutual Aid Regional Calling
+1227	Systemwide Mutual Aid Regional Pursuit
+1229	Systemwide Mutual Aid Regional Operations 1
+1231	Systemwide Mutual Aid Regional Operations 2
+1233	Systemwide Mutual Aid Regional Operations 3
+1235	Mecklenburg Event 17
+1237	Mecklenburg Event 18
+1239	Mecklenburg Event 19
+1241	Mecklenburg Event 20
+1243	Mecklenburg Event 21
+1245	Mecklenburg Event 22
+1247	Mecklenburg Event 23
+1249	Mecklenburg Event 24
+1251	Mecklenburg Event 25
+1253	Mecklenburg Event 26
+1255	Mecklenburg Event 27
+1257	Mecklenburg Event 28
+1259	Mecklenburg Event 29
+1261	Mecklenburg Event 30
+1263	Mecklenburg Event 31
+1265	Mecklenburg Event 32
+1267	Mecklenburg North Lakes
+1269	Mecklenburg South Lakes
+1271	Mecklenburg Security Network
+1273	Mecklenburg Bomb Squad 1
+1301	Mecklenburg Fire Training 5I
+1303	Mecklenburg Fire Training 5J
+1307	Mecklenburg Fire Conference 5
+1309	Mecklenburg Fire Emergency Zone 8
+1317	Mecklenburg Fire Emergency Zone 16
+1319	Mecklenburg Fire Emergency Zone 17
+1329	Mecklenburg Fire Administration 10
+1557	Mecklenburg Sheriff 1 Dispatch
+1559	Mecklenburg Sheriff 2
+1561	Mecklenburg Sheriff 3
+1563	Mecklenburg Sheriff 4
+1565	Mecklenburg Sheriff 5
+1567	Mecklenburg Sheriff 6
+1569	Mecklenburg Sheriff 7
+1627	Mecklenburg Police 1
+1629	Mecklenburg Police 2
+1631	Mecklenburg Police Dispatch 2
+1633	Mecklenburg Poilce Tac 1
+1635	Mecklenburg Police Dispatch 1
+1637	Mecklenburg Police Conference
+1655	Mecklenburg South Meck Towns Mutual Aid
+1669	Mecklenburg North Meck Towns Mutual Aid
+1675	Mecklenburg Police 1
+1677	Mecklenburg Police 2
+1679	Radio Technicians Radio Service A
+1681	Radio Technicians Radio Service B
+1689	Mecklenburg Special Transportation Services 1
+1691	Mecklenburg Special Transportation Services 2
+1693	Mecklenburg Special Transportation Services 3
+1779	Mecklenburg Animal Control Dispatch
+1781	Mecklenburg Animal Control Conference
+2001	Mecklenburg ABC Board 1
+2003	Mecklenburg ABC Board 2
+2085	Mecklenburg Fire Operations 1
+2101	Mecklenburg Mint Hill Police Dispatch
+2103	Mecklenburg Mint Hill Police 2
+2105	Mecklenburg Mint Hill Police 3
+2125	Mecklenburg York County Mutual Aid
+2137	Mecklenburg Bus Operations 4
+2139	Mecklenburg Bus Operations 5
+2149	Mecklenburg Security
+4063	Radio Technicians Radio Service D
+7000	Cabarrus Dispatch
+7001	Cabarrus Animal Control
+7002	Cabarrus Tactical 3
+7003	Cabarrus Tactical 4
+7004	Cabarrus Tactical 5
+7005	Cabarrus Tactical 6
+7006	Cabarrus Investigations 1
+7007	Cabarrus Jail 1
+7008	Cabarrus Jail 2
+7009	Cabarrus Civil
+7010	Cabarrus Court Security
+7013	Cabarrus All Call
+7014	Cabarrus Police Dispatch 1
+7015	Cabarrus Police Dispatch 2
+7016	Cabarrus Police Tactical 3
+7017	Cabarrus Police Tactical 4
+7018	Cabarrus Police Tactical 5
+7019	Cabarrus Police Tactical 6
+7020	Cabarrus Police Tactical 7
+7021	Cabarrus Police Tactical 8
+7025	Cabarrus Police Investigations 4
+7028	Cabarrus Police Dispatch 1
+7029	Cabarrus Police Dispatch 2
+7030	Cabarrus Police Tactical 1
+7031	Cabarrus Police Tactical 2
+7034	Cabarrus Fire Dispatch
+7035	Cabarrus EMS/Rescue Dispatch
+7036	Cabarrus Operations 3
+7037	Cabarrus Operations 4
+7038	Cabarrus Operations 5
+7039	Cabarrus Operations 6
+7040	Cabarrus Operations 7
+7041	Cabarrus Operations 8
+7042	Cabarrus Operations 9
+7043	Cabarrus Conference
+7044	Cabarrus Training 1
+7045	Cabarrus Training 2
+7047	Cabarrus Fire Dispatch
+7048	Cabarrus Fire Operations 2
+7049	Cabarrus Fire Operations 3
+7050	Cabarrus Fire Operations 4
+7051	Cabarrus Fire Operations 5
+7052	Cabarrus Fire Operations 6
+7053	Cabarrus Fire Operations 7
+7054	Cabarrus Fire Operations 8
+7055	Cabarrus Fire Operations 9
+7056	Cabarrus Fire Conference
+7057	Cabarrus Fire Training 1
+7058	Cabarrus Fire Training 2
+7060	Cabarrus Fire Emergency
+7064	Cabarrus Fire Dispatch
+7065	Cabarrus Fire Operations 1
+7066	Cabarrus Fire Operations 2 (Medical Ops)
+7067	Cabarrus Fire Operations 3
+7068	Cabarrus Fire Operations 4
+7069	Cabarrus Fire Operations 5
+7070	Cabarrus Fire Operations 6
+7071	Cabarrus Fire Training
+7072	Cabarrus Fire Conference
+7074	Systemwide Hospitals Atrium NorthEast
+7075	Systemwide Hospitals Atrium Kannapolis
+7100	Cabarrus Event 1
+7101	Cabarrus Event 2
+7102	Cabarrus Event 3
+7103	Cabarrus Event 4
+7104	Cabarrus Event 5
+7105	Cabarrus Event 6
+7106	Cabarrus Event 7
+7107	Cabarrus Event 8
+7108	Cabarrus Event 9
+7109	Cabarrus Event 10
+7110	Cabarrus Event 11
+7111	Cabarrus Event 12
+7112	Cabarrus Event 13
+7113	Cabarrus Event 14
+7114	Cabarrus Event 15
+7115	Cabarrus Event 16
+7116	Cabarrus Police Mutual Aid
+7117	Cabarrus Fire Mutual Aid
+7118	Cabarrus Utility Mutual Aid
+7119	Cabarrus Public Works Mutual Aid
+7120	Cabarrus Emergency Management Mutual Aid
+7121	Cabarrus EMS Mutual Aid
+7122	Cabarrus/Rowan Bridge
+7134	Cabarrus Transportation
+7135	Cabarrus Transportation 2
+7136	Cabarrus Public Works
+7137	Cabarrus Concord Power SCADA
+7147	Cabarrus Sanitation
+7154	Cabarrus Concord-Padgett Airport Ops
+7155	Cabarrus Concord-Kannapolis Rider 1
+7156	Cabarrus Concord-Kannapolis Rider 2
+7169	Cabarrus Airport Operations
+18500	Gaston Police
+18504	Gaston Police 1
+18505	Gaston Police 2
+18510	Gaston Tac 1
+18514	Gaston Police 1
+18515	Gaston Police 2
+18516	Gaston Police 3
+18517	Gaston Police 4
+18518	Gaston Police 5
+18519	Gaston Police 6
+18520	Gaston Police Mutual Aid
+18533	Gaston Fire 2
+18534	Gaston Fire 3
+18535	Gaston Fire 4
+18536	Gaston Fire 5
+18537	Gaston Fire 6
+18538	Gaston Fire 7
+18539	Gaston Fire 8
+18540	Gaston Fire 9
+18541	Gaston Fire 10
+18542	Gaston Fire 11
+18554	Gaston Fire Dispatch
+18556	Gaston Fire Training
+18572	Gaston Street Crimes Unit
+18577	Gaston Fire Conference
+25071	Iredell Police Dispatch 1
+25072	Iredell Police Dispatch 2
+25073	Iredell Police Conference
+25074	Iredell Police Tac 1
+25075	Iredell Police Tac 2
+25076	Iredell Police Tac 3
+25077	Iredell Police Tac 4
+25078	Iredell Police Tac 5
+25079	Iredell Police Tac 6
+25080	Iredell Police Tac 7
+25084	Iredell Street Department
+25092	Systemwide Hospitals Lake Norman Regional Hospital
+25093	Systemwide Hospitals Lake Norman Regional Hospital Security
+25094	Systemwide Hospitals Lake Norman Regional Hospital RVN
+25095	Systemwide Hospitals Lake Norman Regional Hospital Patient Operations
+25096	Systemwide Hospitals Lake Norman Regional Hospital Patient Triage
+25097	Systemwide Hospitals Lake Norman Regional Hospital Nursing
+25098	Systemwide Hospitals Lake Norman Regional Hospital Emergency Room Operations
+25099	Systemwide Hospitals Lake Norman Regional Hospital Public Information Officer (PIO)
+25101	Iredell Sheriff Dispatch
+25119	Iredell Fire Dispatch 1
+25120	Iredell Fire Dispatch 2
+25121	Iredell Fireground B
+25122	Iredell Fireground C
+25123	Iredell Fireground D
+25124	Iredell Fireground E
+25125	Iredell Fireground F
+25126	Iredell Fireground G
+25127	Iredell Fireground H
+25128	Iredell Fire Conference
+25129	Iredell Fire Training
+25130	Iredell Fire Marshal's Office
+25131	Iredell Fire Administration
+25132	Iredell Fire Station 7
+25133	Iredell Fire Station 1
+25134	Iredell Fire Station 2
+25135	Iredell Fire Station 3
+25136	Iredell Fire Station 4
+25137	Iredell Fire Station 5
+25138	Iredell Fire Station 6
+25139	Iredell Fire Hazmat
+25140	Iredell Fireground I
+25141	Iredell Fireground J
+25142	Iredell Fireground K
+25143	Iredell Fireground L
+25144	Iredell Fireground M
+25145	Iredell Fireground N
+25146	Iredell Fireground O
+25147	Iredell Fire Dispatch
+25148	Iredell EMS Dispatch
+25149	Iredell Countywide Mutual Aid
+25150	Iredell Fire Conference
+25151	Iredell Fire Administration
+25152	Iredell Fire Marshal's Office
+25153	Iredell Fire Training 1
+25154	Iredell Fire Training 2
+25155	Iredell Fire Training 3
+25156	Iredell Shepherds Fire Station 5
+25157	Iredell Mount Mourne Fire Station 7
+25158	Iredell Troutman Fire Station 10
+25159	Iredell Lake Norman Fire Station 11
+25160	Iredell South Iredell Fire Station 12
+25163	Iredell Emergency Management
+25164	Iredell EMS Tactical 3 Conference
+25165	Iredell EMS Tactical 1
+25166	Iredell EMS Tactical 2
+25170	Iredell Fire Emergency
+25182	Iredell Engineering
+25183	Iredell OFC
+25184	Iredell Planning
+25185	Iredell Inspectors
+25186	Iredell Delivery Service
+25187	Iredell Garage
+25188	Iredell Lands Department
+25189	Iredell Public Works
+25190	Iredell Rec Dept
+25191	Iredell Mooresville Golf Course
+25192	Iredell Transit Department
+25193	Iredell Utility Dispatch
+25194	Iredell Street
+25195	Iredell Traffic Department
+25196	Iredell Info-Tele
+25198	Iredell Waste
+25199	Iredell Utilities Meter Reader
+25200	Iredell Utilities OPS 1
+25201	Iredell Utilities OPS 2
+25202	Iredell Utilities OPS 3
+25203	Iredell Utilities OPS 4
+25204	Iredell Water Department
+25205	Iredell Waste 2
+25226	Iredell Reamer Dispatch
+25227	Iredell Reamer Activity
+25228	Iredell Reamer Patch
+25229	Iredell Rowan County Patch
+25230	Iredell Local Government Communications
+25231	Iredell Public Safety Communications
+25232	Iredell Municipality Communications
+25233	Iredell Countywide Fire Mutual Aid
+25234	Iredell Countywide EMS Mutual Aid
+25235	Iredell Police Mutual Aid
+25236	Iredell Event 1
+25237	Iredell Event 2
+25238	Iredell Event 3
+25239	Iredell Event 4
+25240	Iredell Event 5
+25241	Iredell Event 6
+25242	Iredell Event 7
+25243	Iredell Event 8
+25244	Iredell Event 9
+25245	Iredell Event 10
+25246	Iredell Event 11
+25247	Iredell Event 12
+25248	Iredell Event 13
+25249	Iredell Event 14
+25250	Iredell Event 15
+25251	Iredell Event 16
+25252	Iredell RADIO 1
+25253	Iredell RADIO 2
+30500	Mecklenburg Public Safety Tac 1
+30501	Mecklenburg Public Safety Tac 2
+30502	Mecklenburg Public Safety Tac 3
+30503	Mecklenburg Public Safety Tac 4
+30504	Mecklenburg Public Safety Tac 5
+30505	Mecklenburg Public Safety Tac 6
+30506	Mecklenburg Public Safety Tac 7
+30507	Mecklenburg Public Safety Tac 8
+30508	Mecklenburg Public Safety Tac 9
+30509	Mecklenburg Public Safety Tac 10
+30510	Mecklenburg Public Safety Tac 11
+30511	Mecklenburg Public Safety Tac 12
+30512	Mecklenburg Public Safety Tac 13
+30513	Mecklenburg Public Safety Tac 14
+30514	Mecklenburg Fire Emergency Zone 3
+30515	Mecklenburg Fire Emergency Zone 4
+30521	Mecklenburg Fire Special Ops 4
+30522	Mecklenburg Fire Special Ops 4
+30523	Mecklenburg Fire Special Ops 4
+30524	Mecklenburg Fire Special Ops 4
+30525	Mecklenburg Fire Special Ops 4
+30526	Mecklenburg Fire Special Ops 4
+30527	Mecklenburg Fire Special Ops 4
+30528	Mecklenburg Fire Hazmat 1
+30529	Mecklenburg Fire Hazmat 2
+30532	Mecklenburg COML Tac
+30535	Mecklenburg Air Operations
+30536	Mecklenburg Unknown Encrypted
+30538	Mecklenburg Intelligence
+30539	Mecklenburg Intelligence 1
+30541	Mecklenburg Bomb Squad 2
+30542	Mecklenburg CLT Wide
+30551	Mecklenburg Airport Operations 1
+30552	Mecklenburg Airport Operations 2
+30553	Mecklenburg Airport Operations 3
+30554	Mecklenburg Airport Operations 4
+30555	Mecklenburg Airport Security 1
+30556	Mecklenburg Airport Security 2
+30557	Mecklenburg Airport Security 3
+30558	Mecklenburg Airport Security 4
+30559	Mecklenburg Airport Admin
+30560	Mecklenburg Airport Fire
+30561	Mecklenburg Airport EMS
+30562	Mecklenburg Airport Event 1
+30563	Mecklenburg Airport Event 2
+30564	Mecklenburg Fire Ops 1L - Staging
+30565	Systemwide Hospitals Atrium Providence
+30566	Systemwide Hospitals Atrium Union West
+30567	Systemwide Hospitals Atrium Mountain Island
+30577	Mecklenburg Charlotte Waste Water
+30584	Mecklenburg Water
+30616	Mecklenburg Unknown Encrypted
+30657	Mecklenburg Solid Waste 1
+30663	Mecklenburg Allied Security 1
+30664	Mecklenburg Allied Security 2
+30681	Mecklenburg CMPD Airport Dispatch
+30682	Mecklenburg CMPD Airport Conference
+30691	Mecklenburg CPCC Campus Security 1
+30692	Mecklenburg CPCC Campus Security 2
+42500	Stanly Dispatch
+42502	Stanly Patrol
+42510	Stanly Jail
+42511	Stanly Court
+42512	Stanly Police Disp 1
+42513	Stanly Police Disp 2
+42519	Stanly LE Dispatch
+42525	Stanly LE Conference
+42529	Stanly Fire Dispatch
+42530	Stanly EMS Dispatch
+42531	Stanly Regional Medical Center
+42532	Stanly Emergency Operations Center 1
+42533	Stanly Emergency Operations Center 2
+42534	Stanly Emergency Operations Center 3
+42535	Stanly Emergency Management Office
+42537	Stanly Fire Operations 1
+42538	Stanly Fire Operations 2
+42539	Stanly Fire Operations 3
+42540	Stanly Fire Operations 4
+42541	Stanly Fire Operations 5
+42542	Stanly Fire Operations 6
+42543	Stanly Fire Operations 7
+42544	Stanly Fire Operations 8
+42545	Stanly Fire Operations 9
+42546	Stanly Fire Operations 10
+42547	Stanly Fire Operations 11
+42548	Stanly Fire Operations 12
+42549	Stanly Fire Operations 13
+42550	Stanly Fire Operations 14
+42551	Stanly Fire Operations 15
+42552	Stanly Fire Operations 16
+42553	Stanly Fire Operations 17
+42554	Stanly Fire Operations 18
+42555	Stanly Fire Operations 19
+42556	Stanly Fire Operations 20
+42567	Stanly Event 1
+42568	Stanly Event 2
+42569	Stanly Event 3
+42570	Stanly Event 4
+42571	Stanly Event 5
+42572	Stanly Event 6
+42573	Stanly Event 7
+42574	Stanly Event 8
+42575	Stanly Event 9
+42576	Stanly Event 10
+42577	Stanly Event 11
+42578	Stanly Event 12
+42579	Stanly Event 13
+42580	Stanly Event 14
+42581	Stanly Event 15
+42583	Stanly Fire Training 1
+42584	Stanly Fire Training 2
+42585	Stanly Fire Training 3
+42586	Stanly Fire Training 4
+42587	Stanly Fire Training 5
+42588	Stanly Fire Training 6
+42589	Stanly Fire Training 7
+42590	Stanly Fire Training 8
+45500	Union Countywide Operations 2
+45519	Union Private
+45529	Union EMS Conference
+45537	Union Event 1
+45538	Union Event 10
+45539	Union Event 11
+45540	Union Event 12
+45541	Union Event 13
+45542	Union Event 2
+45543	Union Event 3
+45544	Union Event 4
+45545	Union Event 5
+45546	Union Event 6
+45547	Union Event 7
+45548	Union Event 8
+45549	Union Event 9
+45550	Union Conference
+45551	Union Bravo
+45563	Union Operations 1
+45564	Union Operations 2
+45565	Union Operations 3
+45574	Union Police Tac 2
+45582	Systemwide Mutual Aid Common Emergency Operations Center 1
+45583	Systemwide Mutual Aid Common Emergency Operations Center 2
+45584	Systemwide Mutual Aid Common Emergency Operations Center 3
+45585	Systemwide Mutual Aid Common Emergency Operations Center 4
+45586	Union Charlie
+45587	Union Delta
+45588	Union Echo
+45589	Union Foxtrot
+45590	Union Golf
+45591	Union Hotel
+45592	Union India
+45593	Union Juliet
+45594	Union Kilo
+45595	Union Lima
+45596	Union Dispatch 1
+45597	Union Police Dispatch
+45598	Union Records
+45599	Union Emergency
+45602	Union Fire Emergency
+45604	Union EMS Dispatch
+45605	Union Police
+45640	Union Detention Center 2
+45641	Union Detention Center 1
+45644	Union Detention Center
+45648	Union Emergency Operations Center 1
+45649	Union Emergency Operations Center 2
+45650	Union Emergency Operations Center 3
+45651	Union Emergency Operations Center 4
+45657	Union Fire Dispatch
+45665	Union EMS
+45668	Union Police Mutual Aid
+45670	Union Fire Dispatch
+45675	Union Event 14
+45676	Union Event 15
+45677	Union Event 16
+45725	Union Police 2
+45726	Union Private
+45727	Union Police Private
+45729	Union Transportation Operations 1
+45730	Union Transportation Operations 2
+45732	Union County Gas/Electric
+45733	Union Natural Gas Utility
+45734	Union County Gas/Electric 2
+45737	Union Water
+45738	Union Waste Water Treatment
+45740	Union Cane Creek Campground
+45750	Systemwide Hospitals Atrium Waxhaw
+45756	Union Public Works
+45759	Union South Piedmont Community College
+45770	Union School OPs 1
+45771	Union School OPs 2
+45772	Union School OPs 3
+45773	Union School OPs 4
+45774	Union School OPs 5
+45775	Union School OPs 6
+45776	Union School OPs 7
+45777	Union School OPs 8
+45778	Union School OPs 9
+45779	Union School OPs 10

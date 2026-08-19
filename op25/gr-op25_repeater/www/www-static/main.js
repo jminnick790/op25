@@ -2613,21 +2613,39 @@ function full_config(config) {
     
 
     const container = document.getElementById('configDisplay');
+
+    // full_config rebuilds every section from scratch on every call, which
+    // happens more often than just the "View Config" click (see comment
+    // above) -- without this, any section the user had expanded snaps back
+    // to collapsed the next time a full_config message arrives. Remember
+    // which section titles are open before wiping, then restore them below.
+    const expandedSections = new Set();
+    container.querySelectorAll('.config-section').forEach(section => {
+        const header = section.querySelector('.config-header');
+        const content = section.querySelector('.config-content');
+        if (header && content && content.style.display === 'block') {
+            expandedSections.add(header.firstChild.textContent);
+        }
+    });
+
     container.innerHTML = "";
 
     function createSection(title, contentHtml) {
         const section = document.createElement('div');
         section.className = 'config-section';
 
+        const displayTitle = title.charAt(0).toUpperCase() + title.slice(1);
         const header = document.createElement('h3');
         header.className = 'config-header';
 
         // Create text node (title)
-        header.appendChild(document.createTextNode(title.charAt(0).toUpperCase() + title.slice(1)));
+        header.appendChild(document.createTextNode(displayTitle));
+
+        const wasExpanded = expandedSections.has(displayTitle);
 
         // ➕ Add toggle icon
         const toggleIcon = document.createElement('span');
-        toggleIcon.textContent = "➕";
+        toggleIcon.textContent = wasExpanded ? "➖" : "➕";
         toggleIcon.style.marginLeft = "10px";
         toggleIcon.style.fontSize = "16px";
         header.appendChild(toggleIcon);
@@ -2635,7 +2653,7 @@ function full_config(config) {
         const content = document.createElement('div');
         content.className = 'config-content';
         content.innerHTML = contentHtml;
-        content.style.display = 'none'; // start collapsed
+        content.style.display = wasExpanded ? 'block' : 'none'; // restore previous state
 
         header.onclick = () => {
             if (content.style.display === 'none') {

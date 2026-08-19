@@ -427,7 +427,6 @@ class p25_rx_block (gr.top_block):
         self.decoder.control(params)
 
     def configure_tdma(self, params):
-        sys.stderr.write("DIAG configure_tdma: freq(%s) tgid(%s) tdma(%s) tdma_state(%s)\n" % (params.get('freq'), params.get('tgid'), params.get('tdma'), self.tdma_state))
         # Reset per-call decode-quality state on every channel change. Without
         # this, p25p2_tdma's errs_mp.ER (see call_end() in p25p2_tdma.cc) is a
         # long-running average across every call for the life of the process,
@@ -616,7 +615,6 @@ class p25_rx_block (gr.top_block):
         self.target_freq = target_freq
         tune_freq = target_freq + self.options.calibration + self.options.offset + self.options.fine_tune
         r = self.src.set_center_freq(tune_freq)
-        sys.stderr.write("DIAG set_freq: target_freq(%d) tune_freq(%d) result(%s)\n" % (target_freq, tune_freq, r))
         self.demod.reset()      # reset gardner-costas loop
 
         if self.fft_sink:

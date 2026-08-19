@@ -24,6 +24,11 @@ services:
       # HTTP status/terminal UI - LAN/Tailscale convenience only, not needed
       # for the audio path to reach a browser.
       - "${OP25_HTTP_HOST_PORT:-8080}:8080"
+      # Raw PCM WebSocket audio server (op25_audio.cc), used by the New UI's
+      # built-in low-latency player when a channel's destination includes a
+      # ws:// endpoint. rx.py never binds this port; multi_rx.py does when
+      # configured. Harmless to expose either way.
+      - "${OP25_WS_AUDIO_HOST_PORT:-8081}:8081"
     depends_on:
       - audio-bridge
 
