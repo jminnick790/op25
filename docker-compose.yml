@@ -1,5 +1,12 @@
 services:
   op25:
+    # image: is a prebuilt fallback -- `docker compose build`/`up --build`
+    # always builds fresh from source and (re)tags it locally as this same
+    # name, so local dev is unaffected. A host with no local build (just
+    # this compose file + .env, no repo clone) can instead run
+    # `docker compose pull && docker compose up -d` to fetch the image
+    # published by .github/workflows/publish.yml on every push to master.
+    image: ghcr.io/jminnick790/op25:latest
     build:
       context: .
       dockerfile: docker/op25/Dockerfile
@@ -21,6 +28,7 @@ services:
       - "${OP25_WS_AUDIO_HOST_PORT:-8081}:8081"
 
   config-api:
+    image: ghcr.io/jminnick790/op25-config-api:latest
     build:
       context: .
       dockerfile: docker/config-api/Dockerfile
