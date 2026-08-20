@@ -47,7 +47,10 @@ EXPIRY_TIMER = 0.2       # Number of seconds between checks for tgid/freq expiry
 PATCH_EXPIRY_TIME = 20.0 # Number of seconds until patch expiry
 WUID_EXPIRY_TIME = 14400 # Number of seconds until WUID registration expiry (4hrs, per TIA-102.AABD)
 CLEANUP_TIMER = 0.5      # Number of seconds between cleanup intervals
-CALL_LOG_MAX_LEN = 10    # Maximum number of call_log entries to retain
+CALL_LOG_MAX_LEN = 200   # Maximum number of call_log entries to retain -- get_call_log()
+                         # is non-destructive (see below), so this just needs to be large
+                         # enough that no consumer's poll interval can miss an entry between
+                         # reads, not sized for a single destructive drain like it used to be.
 
 #################
 # Helper functions
@@ -344,10 +347,14 @@ class rx_ctl(object):
                 self.receivers[rcvr]['rx_rcvr'].set_debug(dbglvl)
 
     def get_call_log(self):
+        # Non-destructive: multiple independent consumers (the New UI's own
+        # live polling, config-api's history logger) can each read this on
+        # their own schedule without stealing entries from one another.
+        # main.js already dedupes call history client-side (callHistorySeen),
+        # so repeatedly re-reading the same entries here is safe.
         d = {'json_type': 'call_log'}
         with self.call_log_mutex:
             d['log'] = list(self.call_log)
-            self.call_log.clear()
         return json.dumps(d)
 
     def log_call(self, sysid, rcvr, freq, slot, prio, tgid, tgtag, rid, rtag):

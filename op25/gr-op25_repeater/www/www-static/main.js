@@ -264,6 +264,84 @@ function do_onload() {
     setInterval(do_update, 1000);
     send_command("get_full_config", 0, 0);
     send_command("get_ws_instances", 0, 0);
+    setInterval(poll_subscriber_registrations, 5000);
+    setInterval(poll_call_history, 5000);
+    poll_subscriber_registrations();
+    poll_call_history();
+}
+
+// ---------------------------------------------- history from config-api --
+// Subscriber registrations and call history are read from config-api/SQLite
+// now, not op25's own live push -- config-api's background poller is the
+// only thing that reads this data directly from op25 (see
+// docker/config-api/app.py's history_poller()); everything else, including
+// this page, reads the persisted, deduped feed back out of the DB.
+//
+// Simplification vs. the old op25-direct rendering: no WACN/SYSID split (the
+// system name from config-api is shown instead) and no AG/patch column (not
+// captured in the DB schema) -- easy to add back if these turn out to matter.
+const CONFIG_API_PORT = 8091;  // matches CONFIG_API_HOST_PORT's documented default
+
+function configApiUrl(path) {
+    return "http://" + window.location.hostname + ":" + CONFIG_API_PORT + path;
+}
+
+function fmtHistTime(isoStr) {
+    var d = new Date(isoStr);
+    if (isNaN(d.getTime())) return isoStr;
+    return d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+async function poll_subscriber_registrations() {
+    var cb = document.getElementById("trackSubsToggle");
+    var el = document.getElementById("subContainer");
+    if (!(cb && cb.checked)) { if (el) el.style.display = "none"; return; }
+    if (el) el.style.display = "";
+
+    var rows;
+    try {
+        var resp = await fetch(configApiUrl("/api/subscriber_registrations?minutes=15&limit=200"));
+        rows = await resp.json();
+    } catch (e) { return; }
+    if (!Array.isArray(rows)) return;
+
+    var table = document.getElementById("subscribers");
+    if (!table) return;
+    while (table.rows.length > 1) table.deleteRow(1);
+
+    rows.forEach(function (r) {
+        var row = table.insertRow(-1);
+        row.insertCell(0).textContent = fmtHistTime(r.time);
+        row.insertCell(1).textContent = r.sysname || "-";
+        row.insertCell(2).textContent = r.tgid != null ? r.tgid : "-";
+        row.insertCell(3).textContent = r.tgid_tag || (r.tgid != null ? ("Talkgroup " + r.tgid) : "-");
+        row.insertCell(4).textContent = "ID: " + r.source_rid;
+        row.insertCell(5).textContent = "-";
+    });
+}
+
+async function poll_call_history() {
+    var rows;
+    try {
+        var resp = await fetch(configApiUrl("/api/call_history?minutes=15&limit=200"));
+        rows = await resp.json();
+    } catch (e) { return; }
+    if (!Array.isArray(rows)) return;
+
+    var tbody = document.getElementById("callHistoryBody");
+    if (!tbody) return;
+    tbody.innerHTML = "";
+
+    rows.forEach(function (r) {
+        var row = tbody.insertRow(-1);
+        row.insertCell(0).textContent = fmtHistTime(r.time);
+        row.insertCell(1).textContent = r.sysname || "-";
+        row.insertCell(2).textContent = r.freq != null ? (r.freq / 1e6).toFixed(6) : "-";
+        var tgCell = row.insertCell(3);
+        tgCell.colSpan = 2;
+        tgCell.textContent = (r.tgid != null ? r.tgid : "-") + (r.tgtag ? (" " + r.tgtag) : "");
+        row.insertCell(4).textContent = "ID: " + r.rid;
+    });
 }
 
 function is_digit(s) {
@@ -1160,9 +1238,12 @@ function trunk_update(d) {
 
 	var subMode = document.getElementById("subMode").value;
 	// "all" or "selected"
-
-	if (subMode === "all")
-		update_sub_reg_all(d);
+	// Subscriber registrations now come from config-api/SQLite (see
+	// poll_subscriber_registrations() / poll_call_history() below) instead
+	// of op25's own live push -- config-api's poller is the only thing that
+	// reads this data directly from op25 now. update_sub_reg_all()/
+	// update_sub_reg() are left intact, just unused, in case this needs
+	// reverting.
 
     for (var nac in d) {
         if (!is_digit(nac.charAt(0)))
@@ -1184,8 +1265,7 @@ function trunk_update(d) {
             continue;
         }
         
-		if (subMode === "selected")
-			update_sub_reg(d[nac]['wuid_data'],d[nac]['sysid']);      
+		// (was: if (subMode === "selected") update_sub_reg(...) -- see note above)
 
 
         var is_p25 = (d[nac]['type'] == 'p25');
@@ -1602,7 +1682,9 @@ function call_log(d) {
 function handle_response(dl) {
 	
     const dispatch = {
-        call_log: call_log,
+        // call_log: call_log,  -- now sourced from config-api/SQLite instead
+        // of op25's live push; see poll_call_history() below. call_log()
+        // itself is left intact, just unregistered here.
         trunk_update: trunk_update,
         change_freq: change_freq,
         channel_update: channel_update,

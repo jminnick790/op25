@@ -8,6 +8,8 @@ import os
 import re
 import sqlite3
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 import xmlrpc.client
@@ -18,6 +20,7 @@ DB_PATH = os.environ.get("OP25_DB_PATH", "/data/op25.db")
 OP25_HTTP_URL = os.environ.get("OP25_HTTP_URL", "http://op25:8080/")
 OP25_SUPERVISOR_URL = os.environ.get("OP25_SUPERVISOR_URL", "http://op25:9001/RPC2")
 LISTEN_PORT = int(os.environ.get("CONFIG_API_PORT", "8091"))
+HISTORY_POLL_INTERVAL = float(os.environ.get("HISTORY_POLL_INTERVAL", "5"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
@@ -497,6 +500,11 @@ ROUTES = [
     ("POST", r"^/api/channels$", lambda conn, m, body, qs: create_channel(conn, body)),
     ("PUT", r"^/api/channels/(?P<id>\d+)$", lambda conn, m, body, qs: update_channel(conn, int(m["id"]), body)),
     ("DELETE", r"^/api/channels/(?P<id>\d+)$", lambda conn, m, body, qs: delete_channel(conn, int(m["id"]))),
+
+    ("GET", r"^/api/subscriber_registrations$", lambda conn, m, body, qs: list_subscriber_registrations(conn, qs)),
+    ("GET", r"^/api/call_history$", lambda conn, m, body, qs: list_call_history(conn, qs)),
+    ("GET", r"^/api/analysis/tg_activity$", lambda conn, m, body, qs: tg_activity(conn, qs)),
+    ("GET", r"^/api/analysis/hopping_radios$", lambda conn, m, body, qs: hopping_radios(conn, qs)),
 ]
 COMPILED_ROUTES = [(method, re.compile(pattern), handler) for method, pattern, handler in ROUTES]
 
@@ -638,6 +646,186 @@ def export_db(environ, start_response):
     return [data]
 
 
+# --------------------------------------------------------- history poller --
+#
+# Subscriber registrations and call history both only ever exist in op25's
+# own in-memory state (registered_wuids / call_log) -- ephemeral there
+# (registrations expire per TIA-102.AABD, call_log is a small ring buffer).
+# This polls op25's existing 'update' command on a timer and persists
+# whatever's new into subscriber_registrations / call_history, entirely
+# from config-api's side -- op25 itself is untouched by this (beyond the
+# call_log non-destructive-read fix, which was a correctness fix needed
+# regardless of who polls it).
+
+def _active_system_id(conn):
+    row = conn.execute("""
+        SELECT ts.id FROM channels c
+        JOIN trunked_systems ts ON c.trunking_system_id = ts.id
+        LIMIT 1
+    """).fetchone()
+    return row["id"] if row else None
+
+
+def _epoch_to_iso(ts):
+    return datetime.datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def poll_history_once(conn):
+    system_id = _active_system_id(conn)
+    if system_id is None:
+        return  # no active system -- nothing is receiving RF, nothing to log
+
+    try:
+        status, body = op25_send_command("update", 0, 0)
+    except ApiError:
+        return  # op25 unreachable this cycle (e.g. still starting up) -- retry next tick
+    if status != 200:
+        return
+
+    try:
+        responses = json.loads(body)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return
+
+    trunk_update = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "trunk_update"), None)
+    call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
+
+    if trunk_update:
+        # Keys are positional indices (0, 1, 2...) per configured system, not
+        # NAC/sysid -- see tk_p25.py's rx_ctl.to_json(). Only the currently
+        # active system will ever have non-empty wuid_data (inactive systems
+        # never process real RF), so which index is which doesn't matter here.
+        for key, val in trunk_update.items():
+            if key in ("json_type", "nac") or not isinstance(val, dict):
+                continue
+            for entry in val.get("wuid_data", {}).values():
+                if not isinstance(entry, dict) or entry.get("time") is None or entry.get("srcaddr") is None:
+                    continue
+                conn.execute(
+                    """INSERT OR IGNORE INTO subscriber_registrations
+                       (trunked_system_id, time, tgid, tgid_tag, source_rid, tag) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (system_id, _epoch_to_iso(entry["time"]), entry.get("aff_ga"), entry.get("aff_ga_tag"),
+                     entry["srcaddr"], entry.get("tag")),
+                )
+
+    if call_log:
+        for entry in call_log.get("log", []):
+            if not isinstance(entry, dict) or entry.get("time") is None:
+                continue
+            conn.execute(
+                """INSERT OR IGNORE INTO call_history
+                   (trunked_system_id, time, freq, slot, prio, tgid, tgtag, rid, rtag)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (system_id, _epoch_to_iso(entry["time"]), entry.get("freq"), entry.get("slot"), entry.get("prio"),
+                 entry.get("tgid"), entry.get("tgtag"), entry.get("rid"), entry.get("rtag")),
+            )
+
+    conn.commit()
+
+
+def history_poller():
+    while True:
+        try:
+            conn = db()
+            try:
+                poll_history_once(conn)
+            finally:
+                conn.close()
+        except Exception as e:
+            sys.stderr.write(f"history_poller: unexpected error: {e}\n")
+        time.sleep(HISTORY_POLL_INTERVAL)
+
+
+# -------------------------------------------------------------- analysis --
+
+def tg_activity(conn, qs):
+    # Splits the baseline window into "recent" (last `minutes`) and "prior"
+    # (the rest of `baseline_minutes`, i.e. the older comparison period) --
+    # returns both raw counts rather than a pre-derived rate/ratio, so the
+    # caller decides what actually counts as a spike (recent_count vs.
+    # prior_count normalized by their respective durations, a fixed
+    # threshold, a z-score, whatever fits) instead of this endpoint
+    # guessing on their behalf.
+    window_min = float(qs.get("minutes", ["5"])[0])
+    baseline_min = float(qs.get("baseline_minutes", ["60"])[0])
+    recent_cutoff = f"-{window_min} minutes"
+    baseline_cutoff = f"-{baseline_min} minutes"
+    q = """
+    SELECT tgid,
+           COUNT(DISTINCT CASE WHEN time > datetime('now', ?) THEN source_rid END) AS recent_count,
+           COUNT(DISTINCT CASE WHEN time <= datetime('now', ?) THEN source_rid END) AS prior_count
+    FROM subscriber_registrations
+    WHERE time > datetime('now', ?)
+    GROUP BY tgid
+    ORDER BY recent_count DESC
+    """
+    rows = conn.execute(q, (recent_cutoff, recent_cutoff, baseline_cutoff)).fetchall()
+    return [{
+        "tgid": r["tgid"],
+        "recent_distinct_radios": r["recent_count"],
+        "recent_window_minutes": window_min,
+        "prior_distinct_radios": r["prior_count"],
+        "prior_window_minutes": max(baseline_min - window_min, 0),
+    } for r in rows]
+
+
+def hopping_radios(conn, qs):
+    window_min = float(qs.get("minutes", ["60"])[0])
+    limit = int(qs.get("limit", ["20"])[0])
+    q = """
+    SELECT source_rid, COUNT(DISTINCT tgid) AS tg_count, COUNT(*) AS registration_count
+    FROM subscriber_registrations
+    WHERE time > datetime('now', ?)
+    GROUP BY source_rid
+    HAVING tg_count > 1
+    ORDER BY tg_count DESC, registration_count DESC
+    LIMIT ?
+    """
+    rows = conn.execute(q, (f"-{window_min} minutes", limit)).fetchall()
+    return [{
+        "source_rid": r["source_rid"],
+        "distinct_talkgroups": r["tg_count"],
+        "registration_count": r["registration_count"],
+        "window_minutes": window_min,
+    } for r in rows]
+
+
+# --------------------------------------------------- raw history feeds --
+# What the New UI's Subscriber Registrations / Call History panels read
+# from now, instead of polling op25 directly -- config-api's poller is the
+# only thing that talks to op25 for this data; everything else (including
+# op25's own UI) reads it back out of the DB.
+
+def list_subscriber_registrations(conn, qs):
+    window_min = float(qs.get("minutes", ["15"])[0])
+    limit = int(qs.get("limit", ["500"])[0])
+    q = """
+    SELECT sr.*, ts.sysname
+    FROM subscriber_registrations sr
+    JOIN trunked_systems ts ON sr.trunked_system_id = ts.id
+    WHERE sr.time > datetime('now', ?)
+    ORDER BY sr.time DESC
+    LIMIT ?
+    """
+    rows = conn.execute(q, (f"-{window_min} minutes", limit)).fetchall()
+    return rows_to_list(rows)
+
+
+def list_call_history(conn, qs):
+    window_min = float(qs.get("minutes", ["15"])[0])
+    limit = int(qs.get("limit", ["500"])[0])
+    q = """
+    SELECT ch.*, ts.sysname
+    FROM call_history ch
+    JOIN trunked_systems ts ON ch.trunked_system_id = ts.id
+    WHERE ch.time > datetime('now', ?)
+    ORDER BY ch.time DESC
+    LIMIT ?
+    """
+    rows = conn.execute(q, (f"-{window_min} minutes", limit)).fetchall()
+    return rows_to_list(rows)
+
+
 def application(environ, start_response):
     path = environ["PATH_INFO"]
     method = environ["REQUEST_METHOD"]
@@ -664,6 +852,13 @@ def application(environ, start_response):
             start_response("400 Bad Request", [("Content-type", "application/json")])
             return [json.dumps({"error": "invalid JSON body"}).encode()]
 
+    # The New UI (served from op25's own origin/port) fetches the history
+    # feeds below from config-api's origin -- cross-origin, so every JSON
+    # response needs this. No auth on either side currently (matches the
+    # existing "trusted LAN/Tailscale only" posture), so a permissive
+    # origin is consistent with what's already exposed.
+    cors = ("Access-Control-Allow-Origin", "*")
+
     for m, pattern, handler in COMPILED_ROUTES:
         if m != method:
             continue
@@ -674,24 +869,24 @@ def application(environ, start_response):
         try:
             result = handler(conn, match.groupdict(), body, qs)
             out = json.dumps(result).encode()
-            start_response("200 OK", [("Content-type", "application/json"), ("Content-Length", str(len(out)))])
+            start_response("200 OK", [("Content-type", "application/json"), ("Content-Length", str(len(out))), cors])
             return [out]
         except ApiError as e:
             out = json.dumps({"error": e.message}).encode()
-            start_response(f"{e.status} Error", [("Content-type", "application/json"), ("Content-Length", str(len(out)))])
+            start_response(f"{e.status} Error", [("Content-type", "application/json"), ("Content-Length", str(len(out))), cors])
             return [out]
         except sqlite3.IntegrityError as e:
             out = json.dumps({"error": f"constraint violation: {e}"}).encode()
-            start_response("400 Bad Request", [("Content-type", "application/json"), ("Content-Length", str(len(out)))])
+            start_response("400 Bad Request", [("Content-type", "application/json"), ("Content-Length", str(len(out))), cors])
             return [out]
         except KeyError as e:
             out = json.dumps({"error": f"missing required field: {e}"}).encode()
-            start_response("400 Bad Request", [("Content-type", "application/json"), ("Content-Length", str(len(out)))])
+            start_response("400 Bad Request", [("Content-type", "application/json"), ("Content-Length", str(len(out))), cors])
             return [out]
         finally:
             conn.close()
 
-    start_response("404 Not Found", [("Content-type", "application/json")])
+    start_response("404 Not Found", [("Content-type", "application/json"), cors])
     return [json.dumps({"error": "no such route"}).encode()]
 
 
@@ -702,8 +897,10 @@ class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 def main():
     if not os.path.exists(DB_PATH):
         sys.stderr.write(f"WARNING: {DB_PATH} does not exist yet -- run migrate_json_to_sqlite.py first\n")
+    threading.Thread(target=history_poller, daemon=True).start()
     httpd = make_server("0.0.0.0", LISTEN_PORT, application, server_class=ThreadingWSGIServer)
-    sys.stderr.write(f"config-api listening on :{LISTEN_PORT}, db={DB_PATH}, op25={OP25_HTTP_URL}\n")
+    sys.stderr.write(f"config-api listening on :{LISTEN_PORT}, db={DB_PATH}, op25={OP25_HTTP_URL}, "
+                      f"history_poll_interval={HISTORY_POLL_INTERVAL}s\n")
     httpd.serve_forever()
 
 

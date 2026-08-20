@@ -110,4 +110,46 @@ CREATE TABLE channels (
 CREATE INDEX idx_channels_device ON channels(device_id);
 CREATE INDEX idx_channels_trunking_system ON channels(trunking_system_id);
 
-PRAGMA user_version = 1;
+-- Both logged by config-api polling op25's existing 'update' command (see
+-- app.py's history_poller()), not by op25 itself -- op25's own in-memory
+-- state (registered_wuids / call_log) is where this data originates, but
+-- it's ephemeral there (call_log is a small ring buffer, registrations
+-- expire per TIA-102.AABD). Tagged with whichever system is active at
+-- poll time -- registrations/calls only ever populate for the system
+-- actually receiving RF, so there's no ambiguity despite NAC not being
+-- unique across sites (e.g. VIPER's Anderson Mountain/Huntersville/
+-- Lincolnton all share NAC 0x1f0).
+CREATE TABLE subscriber_registrations (
+    id                  INTEGER PRIMARY KEY,
+    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+    time                TEXT NOT NULL,
+    tgid                INTEGER,
+    tgid_tag            TEXT,   -- op25's own resolved talkgroup tag at registration time (aff_ga_tag) --
+                                 -- denormalized like call_history.tgtag, so history reflects what a
+                                 -- talkgroup was called at the time, not retroactively renamed later
+    source_rid          INTEGER NOT NULL,
+    tag                 TEXT,   -- op25's per-radio tag, if any (usually empty)
+    UNIQUE (trunked_system_id, source_rid, time)
+);
+CREATE INDEX idx_subreg_time ON subscriber_registrations(time);
+CREATE INDEX idx_subreg_tgid ON subscriber_registrations(trunked_system_id, tgid, time);
+CREATE INDEX idx_subreg_rid ON subscriber_registrations(trunked_system_id, source_rid, time);
+
+CREATE TABLE call_history (
+    id                  INTEGER PRIMARY KEY,
+    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+    time                TEXT NOT NULL,
+    freq                INTEGER,
+    slot                INTEGER,
+    prio                INTEGER,
+    tgid                INTEGER,
+    tgtag               TEXT,
+    rid                 INTEGER,
+    rtag                TEXT,
+    UNIQUE (trunked_system_id, time, tgid, rid)
+);
+CREATE INDEX idx_callhist_time ON call_history(time);
+CREATE INDEX idx_callhist_tgid ON call_history(trunked_system_id, tgid, time);
+CREATE INDEX idx_callhist_rid ON call_history(trunked_system_id, rid, time);
+
+PRAGMA user_version = 2;
