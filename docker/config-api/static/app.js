@@ -224,6 +224,30 @@ async function activateSystem(id) {
     catch (e) { toast(e.message, true); }
 }
 
+// -------------------------------------------------------- import/export --
+
+async function importConfig(inputEl) {
+    const file = inputEl.files[0];
+    inputEl.value = ""; // reset so picking the same file again still fires onchange
+    if (!file) return;
+    if (!confirm(
+        `Import ${file.name}? This REPLACES every system, talkgroup, group, and access ` +
+        "list currently configured, and restarts op25 to apply it. The current config " +
+        "is backed up on disk first, but there's no undo from this UI."
+    )) return;
+
+    toast("Importing...");
+    try {
+        const resp = await fetch("/api/import", { method: "POST", body: file });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        toast(data.status);
+        setTimeout(() => location.reload(), 2000);
+    } catch (e) {
+        toast(e.message, true);
+    }
+}
+
 // ----------------------------------------------------------- talkgroups --
 
 const NEW_CATEGORY_SENTINEL = "__new__";

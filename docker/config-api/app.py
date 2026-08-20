@@ -539,12 +539,94 @@ def static_file(environ, start_response):
     return [data]
 
 
+REQUIRED_TABLES = {
+    "tag_sets", "talkgroups", "categories", "access_lists",
+    "access_list_entries", "trunked_systems", "devices", "channels",
+}
+
+
+def import_db(environ, start_response):
+    # Wholesale replace of the live SQLite DB from an uploaded file (the
+    # counterpart to export_db()'s download). The raw file bytes are the
+    # POST body (Content-Type: application/octet-stream) -- no multipart
+    # parsing needed, keeps this stdlib-only.
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    if length == 0:
+        start_response("400 Bad Request", [("Content-type", "application/json")])
+        return [json.dumps({"error": "empty request body"}).encode()]
+    data = environ["wsgi.input"].read(length)
+
+    tmp_path = DB_PATH + ".importing"
+    with open(tmp_path, "wb") as f:
+        f.write(data)
+
+    # Validate before touching the live DB: must be a well-formed SQLite
+    # file with the schema this app expects, not just any random upload.
+    try:
+        check_conn = sqlite3.connect(f"file:{tmp_path}?mode=ro", uri=True)
+        integrity = check_conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ValueError(f"integrity_check failed: {integrity}")
+        tables = {r[0] for r in check_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        missing = REQUIRED_TABLES - tables
+        if missing:
+            raise ValueError(f"missing expected tables: {', '.join(sorted(missing))}")
+        check_conn.close()
+    except (sqlite3.Error, ValueError) as e:
+        os.remove(tmp_path)
+        start_response("400 Bad Request", [("Content-type", "application/json")])
+        return [json.dumps({"error": f"not a valid op25 config DB: {e}"}).encode()]
+
+    # Back up whatever's live now before replacing it.
+    backup_name = None
+    if os.path.exists(DB_PATH):
+        stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        backup_name = f"{DB_PATH}.bak-{stamp}"
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        with open(DB_PATH, "rb") as src, open(backup_name, "wb") as dst:
+            dst.write(src.read())
+
+    # Atomic swap, then drop any stale -wal/-shm sidecar files left over
+    # from the PREVIOUS db -- they reference the old file's page layout and
+    # would corrupt reads against the newly-swapped-in content otherwise.
+    os.replace(tmp_path, DB_PATH)
+    # Two sources of stale sidecar files to clean up: whatever the previous
+    # DB_PATH left behind, and whatever validating tmp_path read-only above
+    # may have created under the pre-rename name (os.replace only renames
+    # the main file, not its -wal/-shm siblings).
+    for stale in (DB_PATH + "-wal", DB_PATH + "-shm", tmp_path + "-wal", tmp_path + "-shm"):
+        if os.path.exists(stale):
+            os.remove(stale)
+
+    # Persist WAL mode on the new file -- op25's connections are read-only
+    # and can't set journal_mode themselves (see db_config.py).
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.close()
+
+    # Structural data (systems/devices/channels) only takes effect on
+    # process start, same as any "Set Active"/topology edit -- restart to
+    # apply the imported config.
+    try:
+        docker_status = docker_restart(OP25_CONTAINER_NAME)
+    except ApiError as e:
+        start_response("200 OK", [("Content-type", "application/json")])
+        return [json.dumps({
+            "status": "imported, but restart failed -- restart op25 manually",
+            "error": e.message,
+            "backup": backup_name,
+        }).encode()]
+
+    start_response("200 OK", [("Content-type", "application/json")])
+    return [json.dumps({"status": "imported, op25 restarting", "docker_status": docker_status, "backup": backup_name}).encode()]
+
+
 def export_db(environ, start_response):
     # Whole-file download of the live SQLite DB -- this is the entire config
     # (systems, talkgroups, categories, access lists, devices, channels) in
-    # one portable, self-contained file. Import elsewhere is just placing it
-    # at the target deployment's DB path (see README/deploy notes) -- no
-    # separate import endpoint needed.
+    # one portable, self-contained file.
     if not os.path.exists(DB_PATH):
         start_response("404 Not Found", [("Content-type", "text/plain")])
         return [b"no database file found"]
@@ -572,6 +654,9 @@ def application(environ, start_response):
 
     if path == "/api/export" and method == "GET":
         return export_db(environ, start_response)
+
+    if path == "/api/import" and method == "POST":
+        return import_db(environ, start_response)
 
     if not path.startswith("/api/"):
         return static_file(environ, start_response)

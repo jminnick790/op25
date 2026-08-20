@@ -12,6 +12,8 @@
   <button data-tab="talkgroups">Talkgroups</button>
   <button data-tab="lists">Access Lists</button>
   <a href="/api/export" class="toggle-add" style="margin-left:auto;text-decoration:none">Export Config</a>
+  <input type="file" id="import-file-input" accept=".db" style="display:none" onchange="importConfig(this)">
+  <button class="toggle-add" onclick="document.getElementById('import-file-input').click()">Import Config</button>
 </nav>
 
 <section id="tab-systems" class="active">
