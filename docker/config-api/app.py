@@ -2,6 +2,7 @@
 # Sidecar CRUD API + minimal admin UI for OP25's SQLite-backed config
 # (see docker/config/schema.sql). Stdlib only -- hand-rolled WSGI routing,
 # same convention as op25/gr-op25_repeater/apps/http_server.py.
+import datetime
 import http.client
 import json
 import os
@@ -538,9 +539,39 @@ def static_file(environ, start_response):
     return [data]
 
 
+def export_db(environ, start_response):
+    # Whole-file download of the live SQLite DB -- this is the entire config
+    # (systems, talkgroups, categories, access lists, devices, channels) in
+    # one portable, self-contained file. Import elsewhere is just placing it
+    # at the target deployment's DB path (see README/deploy notes) -- no
+    # separate import endpoint needed.
+    if not os.path.exists(DB_PATH):
+        start_response("404 Not Found", [("Content-type", "text/plain")])
+        return [b"no database file found"]
+    # Force a WAL checkpoint first so the export reflects every committed
+    # write, not just what's made it from the -wal file into the main
+    # database file yet.
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.close()
+    with open(DB_PATH, "rb") as f:
+        data = f.read()
+    stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    filename = f"op25-config-{stamp}.db"
+    start_response("200 OK", [
+        ("Content-type", "application/octet-stream"),
+        ("Content-Length", str(len(data))),
+        ("Content-Disposition", f'attachment; filename="{filename}"'),
+    ])
+    return [data]
+
+
 def application(environ, start_response):
     path = environ["PATH_INFO"]
     method = environ["REQUEST_METHOD"]
+
+    if path == "/api/export" and method == "GET":
+        return export_db(environ, start_response)
 
     if not path.startswith("/api/"):
         return static_file(environ, start_response)
