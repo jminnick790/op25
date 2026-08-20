@@ -28,7 +28,7 @@ async function api(method, path, body) {
 
 // Internal tab id -> URL path (kept distinct so the "lists" tab id can read
 // nicer in the address bar without renaming it everywhere in this file).
-const TAB_PATHS = { systems: "/systems", talkgroups: "/talkgroups", lists: "/access-lists" };
+const TAB_PATHS = { systems: "/systems", talkgroups: "/talkgroups", lists: "/access-lists", devices: "/devices" };
 const PATH_TABS = Object.fromEntries(Object.entries(TAB_PATHS).map(([tab, path]) => [path, tab]));
 
 function tabFromPath(pathname) {
@@ -45,6 +45,7 @@ function switchTab(tab, pushState = true) {
     if (tab === "systems") loadSystems();
     if (tab === "talkgroups") loadTalkgroups();
     if (tab === "lists") loadListEntries();
+    if (tab === "devices") loadDevices();
 }
 
 window.addEventListener("popstate", (e) => {
@@ -413,6 +414,106 @@ async function createAccessList() {
         toast("List added");
         await loadLookups();
     } catch (e) { toast(e.message, true); }
+}
+
+// -------------------------------------------------------------- devices --
+
+async function loadDevices() {
+    const [devices, channels, systems] = await Promise.all([
+        api("GET", "/api/devices"), api("GET", "/api/channels"), api("GET", "/api/systems"),
+    ]);
+
+    const devTbody = document.querySelector("#devices-table tbody");
+    devTbody.innerHTML = "";
+    for (const d of devices) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><input value="${esc(d.name)}" onchange="updateDevice(${d.id}, {name: this.value})" style="width:95%"></td>
+          <td><input value="${esc(d.args)}" onchange="updateDevice(${d.id}, {args: this.value})" style="width:95%"></td>
+          <td><input value="${esc(d.gains)}" onchange="updateDevice(${d.id}, {gains: this.value})" style="width:95%"></td>
+          <td><input value="${d.ppm}" type="number" onchange="updateDevice(${d.id}, {ppm: parseInt(this.value)})" style="width:4em"></td>
+          <td><input value="${d.rate}" type="number" onchange="updateDevice(${d.id}, {rate: parseInt(this.value)})" style="width:6em"></td>
+          <td><input value="${d.usable_bw_pct}" type="number" step="0.01" onchange="updateDevice(${d.id}, {usable_bw_pct: parseFloat(this.value)})" style="width:4em"></td>
+          <td><input type="checkbox" ${d.tunable ? "checked" : ""} onchange="updateDevice(${d.id}, {tunable: this.checked})"></td>
+          <td><button class="action danger" onclick="deleteDevice(${d.id})">Delete</button></td>`;
+        devTbody.appendChild(tr);
+    }
+
+    document.getElementById("chan-device").innerHTML = devices.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
+    document.getElementById("chan-system").innerHTML = `<option value="">(none)</option>` + systems.map(s => `<option value="${s.id}">${esc(s.sysname)}</option>`).join("");
+
+    const deviceOptions = (selectedId) => devices.map(d =>
+        `<option value="${d.id}" ${d.id === selectedId ? "selected" : ""}>${esc(d.name)}</option>`
+    ).join("");
+    const systemOptions = (selectedId) => `<option value="" ${selectedId ? "" : "selected"}>(none)</option>` + systems.map(s =>
+        `<option value="${s.id}" ${s.id === selectedId ? "selected" : ""}>${esc(s.sysname)}</option>`
+    ).join("");
+
+    const chanTbody = document.querySelector("#channels-table tbody");
+    chanTbody.innerHTML = "";
+    for (const c of channels) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
+          <td><select onchange="updateChannel(${c.id}, {device_id: parseInt(this.value)})">${deviceOptions(c.device_id)}</select></td>
+          <td><select onchange="updateChannel(${c.id}, {trunking_system_id: this.value ? parseInt(this.value) : null})">${systemOptions(c.trunking_system_id)}</select></td>
+          <td><input value="${esc(c.demod_type)}" onchange="updateChannel(${c.id}, {demod_type: this.value})" style="width:5em"></td>
+          <td><input value="${esc(c.destination)}" onchange="updateChannel(${c.id}, {destination: this.value})" style="width:95%"></td>
+          <td><input value="${esc(c.enable_analog)}" onchange="updateChannel(${c.id}, {enable_analog: this.value})" style="width:4em"></td>
+          <td><button class="action danger" onclick="deleteChannel(${c.id})">Delete</button></td>`;
+        chanTbody.appendChild(tr);
+    }
+}
+
+async function createDevice() {
+    try {
+        await api("POST", "/api/devices", {
+            name: document.getElementById("dev-name").value,
+            args: document.getElementById("dev-args").value,
+            gains: document.getElementById("dev-gains").value,
+            ppm: parseInt(document.getElementById("dev-ppm").value) || 0,
+            rate: parseInt(document.getElementById("dev-rate").value) || 1000000,
+        });
+        toast("Device added -- restart op25 to use it");
+        loadDevices();
+    } catch (e) { toast(e.message, true); }
+}
+
+async function updateDevice(id, patch) {
+    try { await api("PUT", `/api/devices/${id}`, patch); toast("Saved -- restart op25 to apply"); }
+    catch (e) { toast(e.message, true); }
+}
+
+async function deleteDevice(id) {
+    if (!confirm("Delete this device? Any channel using it will need a new device assigned.")) return;
+    try { await api("DELETE", `/api/devices/${id}`); toast("Deleted"); loadDevices(); }
+    catch (e) { toast(e.message, true); }
+}
+
+async function createChannel() {
+    const deviceId = document.getElementById("chan-device").value;
+    if (!deviceId) { toast("Add a device first", true); return; }
+    try {
+        await api("POST", "/api/channels", {
+            name: document.getElementById("chan-name").value,
+            device_id: parseInt(deviceId),
+            trunking_system_id: document.getElementById("chan-system").value ? parseInt(document.getElementById("chan-system").value) : null,
+            destination: document.getElementById("chan-destination").value,
+        });
+        toast("Channel added -- restart op25 to use it");
+        loadDevices();
+    } catch (e) { toast(e.message, true); }
+}
+
+async function updateChannel(id, patch) {
+    try { await api("PUT", `/api/channels/${id}`, patch); toast("Saved -- restart op25 to apply"); }
+    catch (e) { toast(e.message, true); }
+}
+
+async function deleteChannel(id) {
+    if (!confirm("Delete this channel?")) return;
+    try { await api("DELETE", `/api/channels/${id}`); toast("Deleted"); loadDevices(); }
+    catch (e) { toast(e.message, true); }
 }
 
 // --------------------------------------------------------------- startup --

@@ -11,6 +11,7 @@
   <button data-tab="systems" class="active">Systems</button>
   <button data-tab="talkgroups">Talkgroups</button>
   <button data-tab="lists">Access Lists</button>
+  <button data-tab="devices">Devices</button>
   <a href="/api/export" class="toggle-add" style="margin-left:auto;text-decoration:none">Export Config</a>
   <input type="file" id="import-file-input" accept=".db" style="display:none" onchange="importConfig(this)">
   <button class="toggle-add" onclick="document.getElementById('import-file-input').click()">Import Config</button>
@@ -107,6 +108,47 @@
   <table id="lists-table">
     <colgroup><col style="width:20%"><col style="width:20%"><col style="width:60%"></colgroup>
     <thead><tr><th>TGID</th><th>TGID End</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section id="tab-devices">
+  <div class="toolbar">
+    <button class="toggle-add" onclick="toggleAdd('dev-add')">+ Add Device</button>
+  </div>
+  <div class="add-row" id="dev-add">
+    <div class="field"><label>Name</label><input id="dev-name" style="width:8em"></div>
+    <div class="field"><label>Args (e.g. rtl_tcp=host:port)</label><input id="dev-args" style="width:18em"></div>
+    <div class="field"><label>Gains</label><input id="dev-gains" style="width:8em"></div>
+    <div class="field"><label>PPM</label><input id="dev-ppm" type="number" style="width:5em" value="0"></div>
+    <div class="field"><label>Rate</label><input id="dev-rate" type="number" style="width:8em" value="1000000"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createDevice()">Add</button></div>
+  </div>
+  <p class="hint">Devices are the physical SDR hardware. Changing these always requires an op25 restart.</p>
+  <div class="table-wrap">
+  <table id="devices-table">
+    <colgroup><col style="width:12%"><col style="width:26%"><col style="width:14%"><col style="width:9%"><col style="width:12%"><col style="width:9%"><col style="width:8%"><col style="width:10%"></colgroup>
+    <thead><tr><th>Name</th><th>Args</th><th>Gains</th><th>PPM</th><th>Rate</th><th>Usable BW%</th><th>Tunable</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+
+  <div class="toolbar" style="margin-top:1rem">
+    <button class="toggle-add" onclick="toggleAdd('chan-add')">+ Add Channel</button>
+  </div>
+  <div class="add-row" id="chan-add">
+    <div class="field"><label>Name</label><input id="chan-name" style="width:14em"></div>
+    <div class="field"><label>Device</label><select id="chan-device"></select></div>
+    <div class="field"><label>System</label><select id="chan-system"></select></div>
+    <div class="field"><label>Destination</label><input id="chan-destination" style="width:18em" value="ws://0.0.0.0:8081"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createChannel()">Add</button></div>
+  </div>
+  <p class="hint">Channels bind one device to one active system. Also always requires a restart -- use "Set Active" on the Systems tab for the common case of switching which system a channel points at.</p>
+  <div class="table-wrap">
+  <table id="channels-table">
+    <colgroup><col style="width:16%"><col style="width:10%"><col style="width:18%"><col style="width:12%"><col style="width:24%"><col style="width:10%"><col style="width:10%"></colgroup>
+    <thead><tr><th>Name</th><th>Device</th><th>System</th><th>Demod</th><th>Destination</th><th>Analog</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   </div>
