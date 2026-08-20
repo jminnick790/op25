@@ -1,43 +1,45 @@
-# Dockerized OP25 Streaming (MVP)
+# Dockerized OP25 Streaming
 
-Runs OP25 against a remote RTL-SDR (via `rtl_tcp` on a separate Pi) and
-streams decoded P25 audio to a browser-playable AAC stream over Icecast.
+Runs OP25 (`multi_rx.py`) against a remote RTL-SDR (via `rtl_tcp` on a
+separate Pi), decoding one or more P25 trunked systems with config managed
+through a SQLite-backed admin UI, and streams decoded audio straight to a
+browser via OP25's own built-in WebSocket player -- no separate transcoding
+pipeline.
 
 ```
-antenna -> RTL-SDR -> Pi Zero 2W (rtl_tcp) -> LAN -> [op25] -> [audio-bridge] -> [icecast] -> browser
+antenna -> RTL-SDR -> Pi Zero 2W (rtl_tcp) -> LAN -> [op25] -> browser (New UI, WS audio)
+                                                          |
+                                                     [config-api] -> browser (admin UI)
 ```
-
-This is a single-system MVP: one hardcoded `trunk.tsv`/`talkgroups.tsv`
-pair, no profile switching, no database-backed config, no live status
-dashboard. Those are planned for later.
 
 ## How the pieces fit together
 
-- **`op25`** container builds this repo's `rx.py` against GNU Radio 3.10 /
-  gr-osmosdr and tunes a *remote* SDR over the network using gr-osmosdr's
-  `rtl_tcp=<host>:<port>` device arg -- no USB passthrough, no privileged
-  container. Decoded call audio is sent out as raw PCM over UDP (OP25's
-  `-w`/`-W`/`-u` "wireshark audio" output, the same protocol its own
-  `sockaudio.py` player consumes) to the `audio-bridge` service.
-- **`audio-bridge`** container runs `op25_udp_shim.py`
-  ([docker/audio-bridge/op25_udp_shim.py](docker/audio-bridge/op25_udp_shim.py)),
-  which turns OP25's bursty UDP audio (packets only while a call is
-  active) into a steady, silence-filled PCM stream over a local TCP
-  socket, then feeds that into `ffmpeg` to encode AAC and push it to
-  Icecast. The silence fill is what keeps the Icecast stream alive and
-  in sync through the gaps between calls.
-- **`icecast`** container serves the AAC stream to any browser or audio
-  client that can play an Icecast mountpoint.
+- **`op25`** container builds this repo's `multi_rx.py` against GNU Radio
+  3.10 / gr-osmosdr and tunes a *remote* SDR over the network using
+  gr-osmosdr's `rtl_tcp=<host>:<port>` device arg -- no USB passthrough, no
+  privileged container. It reads its entire config (SDR device, physical
+  channel, every trunked system definition, talkgroup names, white/black
+  lists) from a SQLite database rather than the JSON/TSV files earlier
+  versions of this MVP used. Decoded call audio goes out over OP25's
+  built-in raw-PCM WebSocket server, which the New UI's audio player
+  connects to directly -- no transcoding/Icecast hop.
+- **`config-api`** container is a small sidecar (stdlib-only Python, no
+  new dependencies) exposing REST CRUD + a browser admin UI for systems,
+  talkgroups, categories (RadioReference-style groupings), and
+  white/blacklists, all backed by the same SQLite file `op25` reads. It
+  also holds Docker-socket access so its "Set Active" action can restart
+  `op25` after a system/device/channel change (anything structural always
+  needs a restart -- talkgroup/list edits can apply live via "Apply", no
+  restart, since `op25` re-queries the DB in place for those).
 
-Only Icecast's port needs to be reachable outside the Docker host (over
-Tailscale) -- `op25` and `audio-bridge` talk to each other purely over the
-compose-internal network.
+Both containers share the config DB through a named Docker volume
+(`op25-config-db`), not a bind mount -- see `docker/config/schema.sql` for
+the schema.
 
 ## 1. Pi-side setup (not built by this repo, do this separately)
 
 On the Pi Zero 2W near the antenna, install `rtl-sdr` tools and run
-`rtl_tcp` as a systemd service bound to the LAN interface, on whatever
-port you'll set as `SDR_PORT` below (default `1234`):
+`rtl_tcp` as a systemd service bound to the LAN interface:
 
 ```
 sudo apt-get install rtl-sdr
@@ -75,90 +77,78 @@ Verify from the Docker host: `nc -zv <pi-ip> 1234` should connect.
 cp .env.example .env
 ```
 
-Edit `.env`:
+`.env` only needs `LOG_VERBOSITY` and the host ports
+(`OP25_HTTP_HOST_PORT`, `OP25_WS_AUDIO_HOST_PORT`, `CONFIG_API_HOST_PORT`)
+-- the SDR device (host/port/gain/ppm), trunked system definitions,
+talkgroups, and which system is active all live in the SQLite DB now, set
+through config-api's UI rather than env vars or bind-mounted files.
 
-- `SDR_HOST` / `SDR_PORT` -- the Pi's LAN IP and the `rtl_tcp` port above.
-- `ICECAST_SOURCE_PASSWORD` / `ICECAST_ADMIN_PASSWORD` -- pick real
-  passwords (used only inside the compose network + whatever you expose
-  over Tailscale).
-- Leave `SDR_SAMPLE_RATE` and `SDR_GAIN` at their defaults unless you know
-  you need to change them for your system.
-- `ENABLE_TDMA_CC` / `ENABLE_PHASE2` -- both default to `true`, matching
-  the bundled example system below (a P25 Phase II site). Set both to
-  `false` if your system is plain P25 Phase 1 (a single FDMA control
-  channel, no TDMA voice slots).
+## 3. Get a config DB in place
 
-The bundled config is a real, working example: North Carolina VIPER
-(`radioreference.com/db/sid/7118`), control-site frequencies/NAC from the
-Anderson Mountain site (Catawba County -- chosen for stronger local
-signal), paired with the full published Lincoln County talkgroup list. A
-trunk.tsv's control site and its talkgroups don't have to be the same
-county -- multiple sites/RFSS zones on a statewide interop system like
-VIPER all carry the same statewide talkgroups, so pick whichever site
-control channel is strongest at your location. Swap in your own system the
-same way:
+`op25` and `config-api` both expect `/data/op25.db` to exist in the
+`op25-config-db` named volume. Two ways to get one there:
 
-- [docker/config/trunk.tsv](docker/config/trunk.tsv) -- one row: system
-  name, control channel frequency/frequencies (comma-separated, no
-  whitespace, e.g. `773.84375,774.19375`), NAC as a `0x`-prefixed hex
-  literal (e.g. `0x1f0`), modulation (`cqpsk` for most P25 systems), and
-  `talkgroups.tsv` as the tags file. RadioReference's system/site page is
-  the usual source for these values -- site frequency tables and grouped
-  talkgroup listings are publicly viewable without a login for most
-  systems, though full search requires a RadioReference Premium
-  Subscription.
-- [docker/config/talkgroups.tsv](docker/config/talkgroups.tsv) -- one
-  `<TGID>\t<Alpha Tag>` per line, tab-separated, no header row.
+- **First-time setup**: run `docker/config/migrate_json_to_sqlite.py`
+  against a `multi_rx.json`-style config to seed a fresh DB (see the
+  script's docstring), or just add your first system/talkgroups by hand
+  through config-api's UI once it's up (an empty DB is fine to start
+  `docker compose up` against -- `op25` will just have nothing to decode
+  until a system + channel exist).
+- **Moving from another deployment**: use that deployment's config-api
+  "Export Config" button to download its `op25.db`, then:
+  ```
+  docker cp op25-config-<timestamp>.db op25:/data/op25.db
+  docker compose restart op25
+  ```
 
-These are bind-mounted read-only into the `op25` container, so edits take
-effect on container restart without rebuilding the image.
-
-## 3. Bring the stack up
+## 4. Bring the stack up
 
 ```
-docker compose up --build
+docker compose build
+docker compose up -d
 ```
 
 First build compiles OP25's C++ blocks against GNU Radio -- expect several
-minutes. Watch the `op25` logs for `sync established` / talkgroup activity
-once a call comes in.
+minutes. Watch `docker compose logs -f op25` for `sync established` /
+talkgroup activity once a call comes in. If `/data/op25.db` doesn't exist
+yet, `op25` will crash-loop until you've put one there (step 3) -- that's
+expected, not a bug.
 
-## 4. Listen
+## 5. Use it
 
-Point a browser or audio client at:
+- **Admin UI** (manage systems, talkgroups, groups, white/blacklists,
+  reorder/search/sort, export config, switch which system is active):
+  `http://<docker-host>:8091` (`CONFIG_API_HOST_PORT`).
+- **New UI** (live channel status, call log, low-latency WebSocket audio
+  player): `http://<docker-host>:8080` (`OP25_HTTP_HOST_PORT`).
 
-```
-http://<docker-host>:8000/op25
-```
-
-(mountpoint and port come from `ICECAST_MOUNT` / `ICECAST_HOST_PORT` in
-`.env`; defaults are `op25` and `8000`). Once Tailscale is layered on top,
-the same URL works from anywhere on your tailnet using the host's
-Tailscale IP/hostname instead -- nothing in this stack needs to change for
-that, since Icecast's container port is the only thing that has to be
-reachable and it isn't bound to anything Tailscale-incompatible.
-
-OP25's HTTP status/terminal UI is also published, at
-`http://<docker-host>:8080` (`OP25_HTTP_HOST_PORT` in `.env`) -- useful
-for confirming control channel lock and talkgroup activity, not required
-for the audio path.
+Both are LAN/Tailscale-only by default -- don't forward either port on a
+public router. Layer Tailscale on top and use the host's Tailscale
+IP/hostname instead of the LAN IP; nothing in the stack needs to change
+for that.
 
 ## Troubleshooting
 
-- **No audio, but `op25` shows control channel lock**: check
-  `docker compose logs audio-bridge` -- confirm ffmpeg connected to the
-  shim's TCP port and is pushing to Icecast without auth errors.
+- **`op25` crash-loops with a SQLite "unable to open database file"
+  error**: no DB in the named volume yet -- see step 3.
 - **`op25` can't reach the SDR**: confirm `rtl_tcp` is running on the Pi
-  and reachable from the Docker host (`nc -zv $SDR_HOST $SDR_PORT`); the
-  Docker host and Pi need to be on the same LAN (or otherwise routed) for
-  this MVP -- only the Icecast leg is meant to cross Tailscale.
+  and reachable from the Docker host (`nc -zv <pi-ip> <port>`); the Docker
+  host and Pi need to be on the same LAN (or otherwise routed).
+- **Edited a talkgroup/list in config-api but don't see it change**:
+  click "Apply" on that system's row (only does something if that system
+  is the currently *active* one), then wait for that talkgroup to
+  transmit again -- the New UI's tag display is a client-side cache
+  seeded from live call events, not a static list, so it won't show a
+  renamed tag until the talkgroup keys up again after your edit.
 - **Choppy/garbled audio**: usually an RF/SDR gain issue on the Pi side,
-  or `SDR_SAMPLE_RATE` too high for the Pi's WiFi link to `rtl_tcp`
-  clients -- try lowering it.
+  or the device's sample rate too high for the Pi's WiFi link to
+  `rtl_tcp` clients -- adjust via the device's `rate`/`gains` fields in
+  config-api (or `sqlite3` directly against the `devices` table for now;
+  no dedicated Devices UI panel yet).
 
-## Out of scope for this MVP
+## Out of scope for now
 
-Talkgroup/system profile switching, database-backed config, a config UI,
-a live status dashboard, Tailscale setup itself, recording, and
-MQTT/Home Assistant integration are all deliberately left out. See the
-project context for the longer-term plan.
+Tailscale setup itself, recording, MQTT/Home Assistant integration, and
+true no-restart hot-swap between active systems (switching still restarts
+`op25` -- see `docker/config/schema.sql`'s comments) are deliberately left
+out.

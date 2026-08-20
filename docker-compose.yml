@@ -19,38 +19,6 @@ services:
       # ws:// endpoint. rx.py never binds this port; multi_rx.py does when
       # configured. Harmless to expose either way.
       - "${OP25_WS_AUDIO_HOST_PORT:-8081}:8081"
-    depends_on:
-      - audio-bridge
-
-  audio-bridge:
-    build:
-      context: .
-      dockerfile: docker/audio-bridge/Dockerfile
-    restart: unless-stopped
-    environment:
-      AUDIO_UDP_PORT: ${AUDIO_UDP_PORT:-23456}
-      PCM_TCP_PORT: 8090
-      ICECAST_HOST: icecast
-      ICECAST_PORT: 8000
-      ICECAST_MOUNT: ${ICECAST_MOUNT:-op25}
-      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:?set ICECAST_SOURCE_PASSWORD in .env}
-      AAC_BITRATE: ${AAC_BITRATE:-32k}
-    depends_on:
-      - icecast
-
-  icecast:
-    build:
-      context: .
-      dockerfile: docker/icecast/Dockerfile
-    restart: unless-stopped
-    environment:
-      ICECAST_SOURCE_PASSWORD: ${ICECAST_SOURCE_PASSWORD:?set ICECAST_SOURCE_PASSWORD in .env}
-      ICECAST_ADMIN_PASSWORD: ${ICECAST_ADMIN_PASSWORD:?set ICECAST_ADMIN_PASSWORD in .env}
-    ports:
-      # The only port that needs to be reachable outside the compose
-      # network. Bind to a Tailscale interface / firewall accordingly --
-      # never forward this on the public router.
-      - "${ICECAST_HOST_PORT:-8000}:8000"
 
   config-api:
     build:
