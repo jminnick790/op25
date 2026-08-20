@@ -168,6 +168,7 @@ document.addEventListener("DOMContentLoaded", function() {
 	document.getElementById("showBandPlan").addEventListener("change", saveSettingsToLocalStorage);	
 	document.getElementById("trackSubsToggle").addEventListener("change", saveSettingsToLocalStorage);
 	document.getElementById("subMode").addEventListener("change", saveSettingsToLocalStorage);
+	document.getElementById("configApiPort").addEventListener("change", saveSettingsToLocalStorage);
 	document.getElementById("muteAudioAtStartup").addEventListener("change", function() {
 		muteAudioAtStartup = this.checked;
 		saveSettingsToLocalStorage();
@@ -265,9 +266,11 @@ function do_onload() {
     send_command("get_full_config", 0, 0);
     send_command("get_ws_instances", 0, 0);
     setInterval(poll_subscriber_registrations, 5000);
-    setInterval(poll_call_history, 5000);
     poll_subscriber_registrations();
-    poll_call_history();
+    // poll_call_history() is NOT wired up here -- see its own comment below
+    // for why: it would clobber appendCallHistory()'s broader, still-active
+    // view (every call the receiver sees on the control channel, tuned or
+    // not) with just the narrower tuned-only subset config-api's DB has.
 }
 
 // ---------------------------------------------- history from config-api --
@@ -280,10 +283,19 @@ function do_onload() {
 // Simplification vs. the old op25-direct rendering: no WACN/SYSID split (the
 // system name from config-api is shown instead) and no AG/patch column (not
 // captured in the DB schema) -- easy to add back if these turn out to matter.
-const CONFIG_API_PORT = 8091;  // matches CONFIG_API_HOST_PORT's documented default
+function configApiPort() {
+    // CONFIG_API_HOST_PORT is whatever the deployer chose (may not be the
+    // documented 8091 default -- e.g. if it conflicted with something else
+    // already running on their server), so this can't be a fixed constant.
+    // Settings > Config API Port (persisted to localStorage) is the source
+    // of truth; falls back to the documented default if never set.
+    var el = document.getElementById("configApiPort");
+    var fromField = el && el.value ? el.value : null;
+    return fromField || localStorage.getItem("configApiPort") || "8091";
+}
 
 function configApiUrl(path) {
-    return "http://" + window.location.hostname + ":" + CONFIG_API_PORT + path;
+    return "http://" + window.location.hostname + ":" + configApiPort() + path;
 }
 
 function fmtHistTime(isoStr) {
@@ -320,6 +332,18 @@ async function poll_subscriber_registrations() {
     });
 }
 
+// NOT called from do_onload() -- kept for reference/future use, but wiring
+// it up regressed Call History to tuned-only calls. config-api's DB (fed
+// by op25's call_log/log_call()) only ever contains calls a receiver
+// actually tuned to -- tk_p25.py's update_talkgroup_srcaddr() explicitly
+// skips logging when talkgroups[tgid]['receiver'] is None. The pre-existing
+// appendCallHistory() mechanism (driven by frequency_data, i.e. every grant
+// seen on the control channel, tuned or not) is broader and still active;
+// this function's tbody.innerHTML clear was wiping out whatever that had
+// added every 5s, leaving only the tuned subset visible. If DB-backed call
+// history is wanted in the UI again, it needs to also capture untuned
+// grants (frequency_data is already in the same 'update' poll response
+// history_poller() fetches -- see app.py) rather than just call_log.
 async function poll_call_history() {
     var rows;
     try {
@@ -2415,6 +2439,7 @@ function saveSettingsToLocalStorage() {
   localStorage.setItem("trackSubsToggle", document.getElementById("trackSubsToggle").checked);
   localStorage.setItem("subMode", document.getElementById("subMode").value);
   localStorage.setItem("muteAudioAtStartup", document.getElementById("muteAudioAtStartup").checked);
+  localStorage.setItem("configApiPort", document.getElementById("configApiPort").value);
 }  // end saveSettingsToLocalStorage
 
 function loadSettingsFromLocalStorage() {
@@ -2428,7 +2453,11 @@ function loadSettingsFromLocalStorage() {
 	const showBandPlan = localStorage.getItem("showBandPlan");
 	const trackSubsToggle = localStorage.getItem("trackSubsToggle");
 	const savedSubMode = localStorage.getItem("subMode");
-	
+	const savedConfigApiPort = localStorage.getItem("configApiPort");
+	if (savedConfigApiPort !== null) {
+		document.getElementById("configApiPort").value = savedConfigApiPort;
+	}
+
 	if (savedSubMode !== null) {
 		document.getElementById("subMode").value = savedSubMode;
 	}	
