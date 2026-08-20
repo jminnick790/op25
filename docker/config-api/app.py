@@ -35,6 +35,132 @@ def rows_to_list(rows):
     return [dict(r) for r in rows]
 
 
+def _table_exists(conn, name):
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone() is not None
+
+
+def _column_exists(conn, table, column):
+    return any(r["name"] == column for r in conn.execute(f"PRAGMA table_info({table})"))
+
+
+def ensure_schema():
+    # Idempotent, run on every startup -- brings whatever DB is mounted up
+    # to the current schema regardless of how old it is, rather than
+    # requiring a manual migration step per deployment per schema change.
+    # Every check here is a real gap discovered the hard way: this session
+    # added several tables/columns to schema.sql but only ever patched them
+    # onto the dev instance by hand, never onto an actual deployed DB --
+    # this is what should have existed from the start.
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = OFF")  # migrating between related tables below
+    changed = []
+    try:
+        # categories table + talkgroups.category_id (replaces the original
+        # free-text talkgroups.category column from before the FK refactor)
+        if not _table_exists(conn, "categories"):
+            conn.execute("""
+                CREATE TABLE categories (
+                    id          INTEGER PRIMARY KEY,
+                    tag_set_id  INTEGER NOT NULL REFERENCES tag_sets(id) ON DELETE CASCADE,
+                    name        TEXT NOT NULL,
+                    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    UNIQUE (tag_set_id, name)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_categories_tag_set ON categories(tag_set_id)")
+            changed.append("created categories table")
+
+        if _table_exists(conn, "talkgroups") and not _column_exists(conn, "talkgroups", "category_id"):
+            conn.execute("ALTER TABLE talkgroups ADD COLUMN category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_talkgroups_category ON talkgroups(category_id)")
+            changed.append("added talkgroups.category_id")
+            if _column_exists(conn, "talkgroups", "category"):
+                # Migrate the old free-text values into normalized category
+                # rows + FK, same as the original one-off migration this
+                # session ran by hand against the dev instance.
+                rows = conn.execute(
+                    "SELECT DISTINCT tag_set_id, category FROM talkgroups WHERE category IS NOT NULL AND category != ''"
+                ).fetchall()
+                cat_id = {}
+                for tag_set_id, cat_name in rows:
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO categories (tag_set_id, name) VALUES (?, ?)", (tag_set_id, cat_name)
+                    )
+                    row = conn.execute(
+                        "SELECT id FROM categories WHERE tag_set_id=? AND name=?", (tag_set_id, cat_name)
+                    ).fetchone()
+                    cat_id[(tag_set_id, cat_name)] = row[0]
+                linked = 0
+                for (tag_set_id, cat_name), cid in cat_id.items():
+                    cur = conn.execute(
+                        "UPDATE talkgroups SET category_id=? WHERE tag_set_id=? AND category=?",
+                        (cid, tag_set_id, cat_name),
+                    )
+                    linked += cur.rowcount
+                changed.append(f"migrated {linked} talkgroups.category values into {len(cat_id)} categories rows")
+                # Old column intentionally left in place (harmless, unused) --
+                # not worth the extra risk of an ALTER TABLE DROP COLUMN here.
+
+        # trunked_systems.sort_order (drag-to-reorder)
+        if _table_exists(conn, "trunked_systems") and not _column_exists(conn, "trunked_systems", "sort_order"):
+            conn.execute("ALTER TABLE trunked_systems ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_trunked_systems_sort_order ON trunked_systems(sort_order)")
+            changed.append("added trunked_systems.sort_order")
+
+        # subscriber_registrations / call_history
+        if not _table_exists(conn, "subscriber_registrations"):
+            conn.execute("""
+                CREATE TABLE subscriber_registrations (
+                    id                  INTEGER PRIMARY KEY,
+                    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+                    time                TEXT NOT NULL,
+                    tgid                INTEGER,
+                    tgid_tag            TEXT,
+                    source_rid          INTEGER NOT NULL,
+                    tag                 TEXT,
+                    UNIQUE (trunked_system_id, source_rid, time)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subreg_time ON subscriber_registrations(time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subreg_tgid ON subscriber_registrations(trunked_system_id, tgid, time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_subreg_rid ON subscriber_registrations(trunked_system_id, source_rid, time)")
+            changed.append("created subscriber_registrations table")
+
+        if not _table_exists(conn, "call_history"):
+            conn.execute("""
+                CREATE TABLE call_history (
+                    id                  INTEGER PRIMARY KEY,
+                    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+                    time                TEXT NOT NULL,
+                    freq                INTEGER,
+                    slot                INTEGER,
+                    prio                INTEGER,
+                    tgid                INTEGER,
+                    tgtag               TEXT,
+                    rid                 INTEGER,
+                    rtag                TEXT,
+                    UNIQUE (trunked_system_id, time, tgid, rid)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_callhist_time ON call_history(time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_callhist_tgid ON call_history(trunked_system_id, tgid, time)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_callhist_rid ON call_history(trunked_system_id, rid, time)")
+            changed.append("created call_history table")
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    if changed:
+        sys.stderr.write("ensure_schema: " + "; ".join(changed) + "\n")
+    else:
+        sys.stderr.write("ensure_schema: schema already up to date\n")
+
+
 class ApiError(Exception):
     def __init__(self, status, message):
         self.status = status
@@ -883,6 +1009,16 @@ def application(environ, start_response):
             out = json.dumps({"error": f"missing required field: {e}"}).encode()
             start_response("400 Bad Request", [("Content-type", "application/json"), ("Content-Length", str(len(out))), cors])
             return [out]
+        except Exception as e:
+            # Anything else -- e.g. "no such table" from a DB schema that
+            # hasn't caught up yet -- previously fell through uncaught and
+            # produced wsgiref's generic "A server error occurred" page with
+            # no useful detail. A real error, still a 500, but at least
+            # legible instead of opaque.
+            sys.stderr.write(f"unhandled error in {method} {path}: {e}\n")
+            out = json.dumps({"error": f"internal error: {e}"}).encode()
+            start_response("500 Internal Server Error", [("Content-type", "application/json"), ("Content-Length", str(len(out))), cors])
+            return [out]
         finally:
             conn.close()
 
@@ -897,6 +1033,11 @@ class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
 def main():
     if not os.path.exists(DB_PATH):
         sys.stderr.write(f"WARNING: {DB_PATH} does not exist yet -- run migrate_json_to_sqlite.py first\n")
+    else:
+        try:
+            ensure_schema()
+        except sqlite3.Error as e:
+            sys.stderr.write(f"ensure_schema: failed, continuing anyway: {e}\n")
     threading.Thread(target=history_poller, daemon=True).start()
     httpd = make_server("0.0.0.0", LISTEN_PORT, application, server_class=ThreadingWSGIServer)
     sys.stderr.write(f"config-api listening on :{LISTEN_PORT}, db={DB_PATH}, op25={OP25_HTTP_URL}, "
