@@ -796,10 +796,34 @@ def _epoch_to_iso(ts):
     return datetime.datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
+def _active_tag_set_id(conn, system_id):
+    row = conn.execute("SELECT tag_set_id FROM trunked_systems WHERE id=?", (system_id,)).fetchone()
+    return row["tag_set_id"] if row else None
+
+
+def _ensure_talkgroup_placeholder(conn, tag_set_id, tgid):
+    # A TGID showing up in a grant/registration with no corresponding
+    # talkgroups row (op25 reads names straight from this table -- see
+    # db_config.load_talkgroups()) would otherwise just silently go
+    # unnamed forever. Auto-create a placeholder so it surfaces in the
+    # config UI and accumulates over time instead of requiring every
+    # TGID to be known and entered up front.
+    # tgid 0 shows up in subscriber registrations when a radio registers
+    # with no group affiliation yet (P25's "no group" convention) -- not a
+    # real talkgroup, so skip it rather than creating a bogus placeholder.
+    if tag_set_id is None or tgid is None or tgid == 0:
+        return
+    conn.execute(
+        "INSERT OR IGNORE INTO talkgroups (tag_set_id, tgid, name) VALUES (?, ?, ?)",
+        (tag_set_id, tgid, f"_Talkgroup {tgid}"),
+    )
+
+
 def poll_history_once(conn):
     system_id = _active_system_id(conn)
     if system_id is None:
         return  # no active system -- nothing is receiving RF, nothing to log
+    tag_set_id = _active_tag_set_id(conn, system_id)
 
     try:
         status, body = op25_send_command("update", 0, 0)
@@ -827,6 +851,7 @@ def poll_history_once(conn):
             for entry in val.get("wuid_data", {}).values():
                 if not isinstance(entry, dict) or entry.get("time") is None or entry.get("srcaddr") is None:
                     continue
+                _ensure_talkgroup_placeholder(conn, tag_set_id, entry.get("aff_ga"))
                 conn.execute(
                     """INSERT OR IGNORE INTO subscriber_registrations
                        (trunked_system_id, time, tgid, tgid_tag, source_rid, tag) VALUES (?, ?, ?, ?, ?, ?)""",
@@ -838,6 +863,7 @@ def poll_history_once(conn):
         for entry in call_log.get("log", []):
             if not isinstance(entry, dict) or entry.get("time") is None:
                 continue
+            _ensure_talkgroup_placeholder(conn, tag_set_id, entry.get("tgid"))
             conn.execute(
                 """INSERT OR IGNORE INTO call_history
                    (trunked_system_id, time, freq, slot, prio, tgid, tgtag, rid, rtag)
