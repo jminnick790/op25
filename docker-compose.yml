@@ -10,11 +10,15 @@ services:
     build:
       context: .
       dockerfile: docker/op25/Dockerfile
-    container_name: op25   # stable name needed by config-api's docker.sock restart call
+    container_name: op25
     restart: unless-stopped
     environment:
       MULTI_RX_DB: /data/op25.db
       LOG_VERBOSITY: ${LOG_VERBOSITY:-1}
+      # Only reachable from other compose-network containers (9001 isn't in
+      # ports: below) -- lets config-api restart the op25 *process* via
+      # supervisord's control interface without any Docker-level access.
+      SUPERVISOR_HTTP_PASSWORD: ${SUPERVISOR_HTTP_PASSWORD:-op25supervisor}
     volumes:
       - op25-config-db:/data
     ports:
@@ -36,15 +40,9 @@ services:
     environment:
       OP25_DB_PATH: /data/op25.db
       OP25_HTTP_URL: http://op25:8080/
-      OP25_CONTAINER_NAME: op25
+      OP25_SUPERVISOR_URL: http://op25:${SUPERVISOR_HTTP_PASSWORD:-op25supervisor}@op25:9001/RPC2
     volumes:
       - op25-config-db:/data
-      # Grants this container root-equivalent control of the Docker host, so
-      # it can restart op25 after system/device/channel edits (which always
-      # require a restart -- see docker/config/schema.sql). Accepted
-      # tradeoff for a home-server deployment; do not expose this service's
-      # port to the open internet.
-      - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "${CONFIG_API_HOST_PORT:-8091}:8091"
     depends_on:

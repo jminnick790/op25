@@ -3,21 +3,20 @@
 # (see docker/config/schema.sql). Stdlib only -- hand-rolled WSGI routing,
 # same convention as op25/gr-op25_repeater/apps/http_server.py.
 import datetime
-import http.client
 import json
 import os
 import re
-import socket
 import sqlite3
 import sys
 import urllib.error
 import urllib.request
+import xmlrpc.client
 from wsgiref.simple_server import make_server, WSGIServer
 from socketserver import ThreadingMixIn
 
 DB_PATH = os.environ.get("OP25_DB_PATH", "/data/op25.db")
 OP25_HTTP_URL = os.environ.get("OP25_HTTP_URL", "http://op25:8080/")
-OP25_CONTAINER_NAME = os.environ.get("OP25_CONTAINER_NAME", "op25")
+OP25_SUPERVISOR_URL = os.environ.get("OP25_SUPERVISOR_URL", "http://op25:9001/RPC2")
 LISTEN_PORT = int(os.environ.get("CONFIG_API_PORT", "8091"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
@@ -428,30 +427,21 @@ def apply_reload(conn, sid):
     return {"status": "reload sent", "op25_status": status}
 
 
-class DockerSocketConnection(http.client.HTTPConnection):
-    """Talk to the Docker Engine API over its unix socket, stdlib only."""
-    def __init__(self, sock_path="/var/run/docker.sock"):
-        super().__init__("localhost")
-        self.sock_path = sock_path
-
-    def connect(self):
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(self.sock_path)
-
-
-def docker_restart(container_name):
-    conn = DockerSocketConnection()
+def restart_op25():
+    # supervisord (running as op25's PID 1, see docker/op25/supervisord.conf)
+    # exposes an XML-RPC control interface on the compose network -- this
+    # restarts the op25 *process* in place, no Docker-level access needed.
+    server = xmlrpc.client.ServerProxy(OP25_SUPERVISOR_URL)
     try:
-        conn.request("POST", f"/containers/{container_name}/restart?t=5")
-        resp = conn.getresponse()
-        resp.read()
-        if resp.status not in (204, 304):
-            raise ApiError(502, f"docker restart failed: HTTP {resp.status}")
-        return resp.status
-    except (OSError, http.client.HTTPException) as e:
-        raise ApiError(502, f"could not reach docker socket: {e}")
-    finally:
-        conn.close()
+        try:
+            server.supervisor.stopProcess("op25", True)
+        except xmlrpc.client.Fault as e:
+            if "NOT_RUNNING" not in e.faultString:
+                raise
+        server.supervisor.startProcess("op25", True)
+        return "restarted"
+    except (xmlrpc.client.Error, OSError) as e:
+        raise ApiError(502, f"could not restart op25 via supervisord: {e}")
 
 
 def activate_system(conn, sid):
@@ -461,8 +451,8 @@ def activate_system(conn, sid):
         raise ApiError(409, "no channel defined to activate this system on")
     conn.execute("UPDATE channels SET trunking_system_id = ? WHERE id = ?", (sid, channel["id"]))
     conn.commit()
-    status = docker_restart(OP25_CONTAINER_NAME)
-    return {"status": "activated, op25 restarting", "docker_status": status}
+    status = restart_op25()
+    return {"status": "activated, op25 restarting", "restart_status": status}
 
 
 # ------------------------------------------------------------------ routing --
@@ -610,7 +600,7 @@ def import_db(environ, start_response):
     # process start, same as any "Set Active"/topology edit -- restart to
     # apply the imported config.
     try:
-        docker_status = docker_restart(OP25_CONTAINER_NAME)
+        restart_status = restart_op25()
     except ApiError as e:
         start_response("200 OK", [("Content-type", "application/json")])
         return [json.dumps({
@@ -620,7 +610,7 @@ def import_db(environ, start_response):
         }).encode()]
 
     start_response("200 OK", [("Content-type", "application/json")])
-    return [json.dumps({"status": "imported, op25 restarting", "docker_status": docker_status, "backup": backup_name}).encode()]
+    return [json.dumps({"status": "imported, op25 restarting", "restart_status": restart_status, "backup": backup_name}).encode()]
 
 
 def export_db(environ, start_response):

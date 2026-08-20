@@ -64,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3-waitress \
         python3-requests \
         libsndfile1 \
+        supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /install/usr/local /usr/local
@@ -79,7 +80,11 @@ COPY docker/op25/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/op25/entrypoint-multi.sh /usr/local/bin/entrypoint-multi.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-multi.sh
 
-# HTTP status/terminal interface, WebSocket audio (multi_rx.py only)
-EXPOSE 8080 8081
+COPY docker/op25/supervisord.conf /etc/supervisor/supervisord.conf
 
-ENTRYPOINT ["/usr/local/bin/entrypoint-multi.sh"]
+# HTTP status/terminal interface, WebSocket audio (multi_rx.py only).
+# 9001 is supervisord's control interface for config-api to restart the
+# op25 process -- deliberately not published to the host, see docker-compose.yml.
+EXPOSE 8080 8081 9001
+
+ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

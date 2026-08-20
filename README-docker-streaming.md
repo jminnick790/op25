@@ -25,12 +25,15 @@ antenna -> RTL-SDR -> Pi Zero 2W (rtl_tcp) -> LAN -> [op25] -> browser (New UI, 
   connects to directly -- no transcoding/Icecast hop.
 - **`config-api`** container is a small sidecar (stdlib-only Python, no
   new dependencies) exposing REST CRUD + a browser admin UI for systems,
-  talkgroups, categories (RadioReference-style groupings), and
-  white/blacklists, all backed by the same SQLite file `op25` reads. It
-  also holds Docker-socket access so its "Set Active" action can restart
-  `op25` after a system/device/channel change (anything structural always
-  needs a restart -- talkgroup/list edits can apply live via "Apply", no
-  restart, since `op25` re-queries the DB in place for those).
+  talkgroups, categories (RadioReference-style groupings), devices/
+  channels, and white/blacklists, all backed by the same SQLite file
+  `op25` reads. Its "Set Active" action (and DB import) restart `op25`
+  after a system/device/channel change (anything structural always needs
+  a restart -- talkgroup/list edits can apply live via "Apply", no
+  restart, since `op25` re-queries the DB in place for those). That
+  restart goes through supervisord's control interface inside the `op25`
+  container itself (see `docker/op25/supervisord.conf`), not the Docker
+  socket -- `config-api` has no Docker-level access to the host at all.
 
 Both containers share the config DB through a named Docker volume
 (`op25-config-db`), not a bind mount -- see `docker/config/schema.sql` for
@@ -142,9 +145,8 @@ for that.
   renamed tag until the talkgroup keys up again after your edit.
 - **Choppy/garbled audio**: usually an RF/SDR gain issue on the Pi side,
   or the device's sample rate too high for the Pi's WiFi link to
-  `rtl_tcp` clients -- adjust via the device's `rate`/`gains` fields in
-  config-api (or `sqlite3` directly against the `devices` table for now;
-  no dedicated Devices UI panel yet).
+  `rtl_tcp` clients -- adjust via the device's `rate`/`gains` fields on
+  config-api's Devices tab, then restart `op25` to apply.
 
 ## Out of scope for now
 
