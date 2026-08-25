@@ -455,6 +455,16 @@ function rx_update(d) {
 
 // frequency, system, and talkgroup display
 
+// Reflects whatever's currently active in the browser tab title, so it's
+// visible without the tab needing to be focused/frontmost.
+function updatePageTitle() {
+    if (current_tgid) {
+        document.title = (c_tag ? c_tag : "Talkgroup " + current_tgid) + " - OP25";
+    } else {
+        document.title = "OP25";
+    }
+}
+
 function change_freq(d) {
 
     c_freq = d['freq'];
@@ -464,6 +474,7 @@ function change_freq(d) {
     displayTalkgroup.innerText = c_tag;
     c_stream_url = d['stream_url'];
     channel_status();
+    updatePageTitle();
 }
 
 function channel_update(d) {
@@ -587,8 +598,9 @@ function channel_update(d) {
             }
             displayTgid.innerText 			= current_tgid ? current_tgid : "-";
             displaySource.innerText 		= c_srctag ? c_srctag : "ID: " + c_srcaddr;
-            
+
             applySmartColorToTgidSpan();
+            updatePageTitle();
             
             if ( displaySource.innerText == "ID: 0")
             	 displaySource.innerText = " ";
@@ -642,6 +654,7 @@ function channel_update(d) {
             c_stream_url = "";
             c_encrypted = 0;
             c_emergency = 0;
+            updatePageTitle();
         }
         channel_status();
 		loadPresets(c_system);
