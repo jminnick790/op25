@@ -151,6 +151,28 @@ def ensure_schema():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_callhist_rid ON call_history(trunked_system_id, rid, time)")
             changed.append("created call_history table")
 
+        # neighbor_sites (roaming foundation -- see docker/config/schema.sql for details)
+        if not _table_exists(conn, "neighbor_sites"):
+            conn.execute("""
+                CREATE TABLE neighbor_sites (
+                    id                  INTEGER PRIMARY KEY,
+                    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+                    freq                INTEGER NOT NULL,
+                    uplink              INTEGER,
+                    rfid                INTEGER,
+                    stid                INTEGER,
+                    lra                 INTEGER,
+                    freq_table          INTEGER,
+                    conventional        INTEGER,
+                    valid               INTEGER,
+                    active              INTEGER,
+                    last_seen           TEXT NOT NULL,
+                    UNIQUE (trunked_system_id, freq)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_neighbor_sites_system ON neighbor_sites(trunked_system_id)")
+            changed.append("created neighbor_sites table")
+
         conn.commit()
     finally:
         conn.close()
@@ -629,6 +651,7 @@ ROUTES = [
 
     ("GET", r"^/api/subscriber_registrations$", lambda conn, m, body, qs: list_subscriber_registrations(conn, qs)),
     ("GET", r"^/api/call_history$", lambda conn, m, body, qs: list_call_history(conn, qs)),
+    ("GET", r"^/api/neighbor_sites$", lambda conn, m, body, qs: list_neighbor_sites(conn, qs)),
     ("GET", r"^/api/analysis/tg_activity$", lambda conn, m, body, qs: tg_activity(conn, qs)),
     ("GET", r"^/api/analysis/hopping_radios$", lambda conn, m, body, qs: hopping_radios(conn, qs)),
 ]
@@ -859,6 +882,24 @@ def poll_history_once(conn):
                      entry["srcaddr"], entry.get("tag")),
                 )
 
+            # neighbor sites -- upsert (latest-known-state, not a history log;
+            # see neighbor_sites table comment in schema.sql)
+            for freq, entry in val.get("adjacent_data", {}).items():
+                if not isinstance(entry, dict):
+                    continue
+                conn.execute(
+                    """INSERT INTO neighbor_sites
+                       (trunked_system_id, freq, uplink, rfid, stid, lra, freq_table, conventional, valid, active, last_seen)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(trunked_system_id, freq) DO UPDATE SET
+                         uplink=excluded.uplink, rfid=excluded.rfid, stid=excluded.stid, lra=excluded.lra,
+                         freq_table=excluded.freq_table, conventional=excluded.conventional,
+                         valid=excluded.valid, active=excluded.active, last_seen=excluded.last_seen""",
+                    (system_id, int(freq), entry.get("uplink"), entry.get("rfid"), entry.get("stid"), entry.get("lra"),
+                     entry.get("table"), entry.get("conventional"), entry.get("valid"), entry.get("active"),
+                     _epoch_to_iso(time.time())),
+                )
+
     if call_log:
         for entry in call_log.get("log", []):
             if not isinstance(entry, dict) or entry.get("time") is None:
@@ -975,6 +1016,20 @@ def list_call_history(conn, qs):
     LIMIT ?
     """
     rows = conn.execute(q, (f"-{window_min} minutes", limit)).fetchall()
+    return rows_to_list(rows)
+
+
+def list_neighbor_sites(conn, qs):
+    # Latest-known-state table, not history -- no time-window filter, unlike
+    # list_subscriber_registrations()/list_call_history() above.
+    system_id = qs.get("system_id", [None])[0]
+    if system_id is None:
+        system_id = _active_system_id(conn)
+    if system_id is None:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM neighbor_sites WHERE trunked_system_id = ? ORDER BY freq", (int(system_id),)
+    ).fetchall()
     return rows_to_list(rows)
 
 

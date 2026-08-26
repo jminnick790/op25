@@ -152,4 +152,31 @@ CREATE INDEX idx_callhist_time ON call_history(time);
 CREATE INDEX idx_callhist_tgid ON call_history(trunked_system_id, tgid, time);
 CREATE INDEX idx_callhist_rid ON call_history(trunked_system_id, rid, time);
 
-PRAGMA user_version = 2;
+-- Latest-known-state table (upsert, not an append-only log like the two
+-- above) -- op25 rebroadcasts its neighbor list continuously on the
+-- control channel, so we want current neighbors with a freshness
+-- timestamp, not a growing history of every rebroadcast. Populated from
+-- p25_system.adjacent_data (tk_p25.py), itself decoded from P25's
+-- "adjacent status" TSBKs (opcodes 0x3c/0xfc/0xfe). Foundation for
+-- eventual site-roaming: resolving a neighbor to one of this DB's own
+-- trunked_systems rows is deliberately not done here (see roaming plan).
+CREATE TABLE neighbor_sites (
+    id                  INTEGER PRIMARY KEY,
+    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+    freq                INTEGER NOT NULL,   -- downlink/control channel Hz (channel_id_to_frequency() output --
+                                             -- NOTE: trunked_systems.control_channel_list stores decimal-MHz
+                                             -- text, not Hz; unit conversion is the roaming phase's job)
+    uplink              INTEGER,            -- Hz, subscriber TX freq (freq + repeater offset)
+    rfid                INTEGER,
+    stid                INTEGER,
+    lra                 INTEGER,
+    freq_table          INTEGER,
+    conventional        INTEGER,
+    valid               INTEGER,
+    active              INTEGER,
+    last_seen           TEXT NOT NULL,
+    UNIQUE (trunked_system_id, freq)
+);
+CREATE INDEX idx_neighbor_sites_system ON neighbor_sites(trunked_system_id);
+
+PRAGMA user_version = 3;
