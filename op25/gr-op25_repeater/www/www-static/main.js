@@ -2622,8 +2622,22 @@ async function findPresetsForSysname(targetSysname) {
     return [];
 }
 
+// channel_update() calls loadPresets(c_system) on every single state
+// refresh (now from both the POST-poll and the SSE push, roughly 2x/sec
+// combined) -- but get_presets_from_config() underneath does a full,
+// uncached get_full_config fetch every time it's called, regardless of
+// whether the system actually changed. That's the dominant source of the
+// large data transfer/request volume seen after the getSiteAlias fix --
+// presets only need reloading when the active system genuinely changes,
+// not on every per-second refresh of the same one.
+var _presetsCache = { sysname: null, presets: null };
+
 async function loadPresets(sysname) {
-    newPresets = await findPresetsForSysname(sysname);
+    if (_presetsCache.sysname !== sysname) {
+        _presetsCache.sysname = sysname;
+        _presetsCache.presets = await findPresetsForSysname(sysname);
+    }
+    newPresets = _presetsCache.presets;
 
     const presetContainer = document.getElementById('presetButtons');
     if (!presetContainer) return;
