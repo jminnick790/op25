@@ -141,6 +141,8 @@ async function loadSites() {
           <td class="drag-handle">&#8942;&#8942;</td>
           <td><input value="${esc(s.sysname)}" onchange="updateSite(${s.id}, {sysname: this.value})" style="width:95%"></td>
           <td><input value="${esc(s.nac)}" onchange="updateSite(${s.id}, {nac: this.value})" style="width:5em"></td>
+          <td><input type="number" value="${s.rfid ?? ""}" onchange="updateSite(${s.id}, {rfid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
+          <td><input type="number" value="${s.stid ?? ""}" onchange="updateSite(${s.id}, {stid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
           <td><input value="${esc(s.control_channel_list)}" onchange="updateSite(${s.id}, {control_channel_list: this.value})" style="width:95%"></td>
           <td><select onchange="updateSite(${s.id}, {system_id: this.value ? parseInt(this.value) : null})">${systemOptions(s.system_id)}</select></td>
           <td><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
