@@ -238,6 +238,13 @@ class sse_broadcaster(threading.Thread):
             resp = _synth_update_request()
             if resp is None:
                 continue    # op25 didn't reply within the timeout this tick -- retry next tick
+            # main.js's SSE handler dispatches through the same handle_response()
+            # table as the POST-poll, but its call_log entry is commented out
+            # there (history now comes from config-api/SQLite) -- so call_log is
+            # dead weight on this path specifically. It's still needed on the
+            # POST path (config-api's own poller reads it from that response to
+            # populate call_history), so only strip it here, not in post_req().
+            resp = [d for d in resp if d.get('json_type') != 'call_log']
             data = json.dumps(resp)
             with sse_mutex:
                 for q in sse_clients:
