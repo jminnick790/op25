@@ -14,39 +14,27 @@ services:
     restart: unless-stopped
     environment:
       MULTI_RX_DB: /data/op25.db
+      OP25_DB_PATH: /data/op25.db
       LOG_VERBOSITY: ${LOG_VERBOSITY:-1}
-      # Only reachable from other compose-network containers (9001 isn't in
-      # ports: below) -- lets config-api restart the op25 *process* via
-      # supervisord's control interface without any Docker-level access.
+      # server (in-container, loopback-only) uses this to control the op25
+      # worker process's lifecycle via supervisord's XML-RPC interface --
+      # never leaves the container, so this is defense-in-depth, not a real
+      # security boundary on its own.
       SUPERVISOR_HTTP_PASSWORD: ${SUPERVISOR_HTTP_PASSWORD:-op25supervisor}
     volumes:
       - op25-config-db:/data
     ports:
-      # HTTP status/terminal UI - LAN/Tailscale convenience only, not needed
-      # for the audio path to reach a browser.
+      # HTTP status/terminal UI + SSE - LAN/Tailscale convenience only, not
+      # needed for the audio path to reach a browser.
       - "${OP25_HTTP_HOST_PORT:-8080}:8080"
       # Raw PCM WebSocket audio server (op25_audio.cc), used by the New UI's
       # built-in low-latency player when a channel's destination includes a
       # ws:// endpoint. rx.py never binds this port; multi_rx.py does when
       # configured. Harmless to expose either way.
       - "${OP25_WS_AUDIO_HOST_PORT:-8081}:8081"
-
-  config-api:
-    image: ghcr.io/jminnick790/op25-config-api:latest
-    build:
-      context: .
-      dockerfile: docker/config-api/Dockerfile
-    restart: unless-stopped
-    environment:
-      OP25_DB_PATH: /data/op25.db
-      OP25_HTTP_URL: http://op25:8080/
-      OP25_SUPERVISOR_URL: http://op25:${SUPERVISOR_HTTP_PASSWORD:-op25supervisor}@op25:9001/RPC2
-    volumes:
-      - op25-config-db:/data
-    ports:
+      # Admin UI + config CRUD API (formerly the separate config-api
+      # container/image -- now the "server" process in this same container).
       - "${CONFIG_API_HOST_PORT:-8091}:8091"
-    depends_on:
-      - op25
 
 volumes:
   op25-config-db:

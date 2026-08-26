@@ -1,10 +1,27 @@
 #!/usr/bin/env python3
-# Sidecar CRUD API + minimal admin UI for OP25's SQLite-backed config
-# (see docker/config/schema.sql). Stdlib only -- hand-rolled WSGI routing,
-# same convention as op25/gr-op25_repeater/apps/http_server.py.
+# The persistent "server" process: SQLite CRUD API + admin UI (formerly a
+# separate config-api container) PLUS the New UI's static assets, SSE
+# broadcast, and command relay (formerly all in op25/gr-op25_repeater/apps/
+# http_server.py). Stdlib only -- hand-rolled WSGI routing.
+#
+# Three listeners, one process (see main()):
+#   - :ADMIN_PORT   the admin UI + config CRUD API, unchanged from before.
+#   - :NEW_UI_PORT  the New UI's static assets, GET /events (SSE), and
+#                   POST / (relayed to the worker -- see relay_to_worker()).
+#   - :INGEST_PORT  127.0.0.1-only. The worker's state_pusher thread
+#                   (op25/gr-op25_repeater/apps/http_server.py) POSTs here
+#                   once a second; see ingest_state_push().
+#
+# This process is never restarted for topology changes (Set Active, DB
+# import) -- only the worker (multi_rx.py, the GNU Radio flowgraph) is, via
+# restart_op25(). That's the whole point of this split: a browser's SSE
+# connection and the admin UI/API stay up through a worker restart instead
+# of dropping with it, which is what happened when both lived in one
+# process. See docker/op25/supervisord.conf for the two program blocks.
 import datetime
 import json
 import os
+import queue
 import re
 import sqlite3
 import sys
@@ -17,11 +34,24 @@ from wsgiref.simple_server import make_server, WSGIServer
 from socketserver import ThreadingMixIn
 
 DB_PATH = os.environ.get("OP25_DB_PATH", "/data/op25.db")
-OP25_HTTP_URL = os.environ.get("OP25_HTTP_URL", "http://op25:8080/")
-OP25_SUPERVISOR_URL = os.environ.get("OP25_SUPERVISOR_URL", "http://op25:9001/RPC2")
-LISTEN_PORT = int(os.environ.get("CONFIG_API_PORT", "8091"))
+# Both loopback-only, since the worker and this process are guaranteed
+# co-located in the same container (see supervisord.conf) -- no reason for
+# either to be configurable via the compose network anymore.
+WORKER_URL = "http://127.0.0.1:8082/"
+OP25_SUPERVISOR_URL = "http://op25:%s@127.0.0.1:9001/RPC2" % os.environ.get("SUPERVISOR_HTTP_PASSWORD", "op25supervisor")
+ADMIN_PORT = int(os.environ.get("CONFIG_API_PORT", "8091"))
+NEW_UI_PORT = int(os.environ.get("OP25_NEW_UI_PORT", "8080"))
+INGEST_PORT = int(os.environ.get("STATE_INGEST_PORT", "8092"))
+# Now doubles as a persistence throttle -- see ingest_state_push(). SSE
+# broadcast still happens on every push (roughly 1/sec, set by the
+# worker's state_pusher), only the DB write step is rate-limited by this.
 HISTORY_POLL_INTERVAL = float(os.environ.get("HISTORY_POLL_INTERVAL", "5"))
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+# Absolute, unlike the New UI's own http_server.py::static_file() which got
+# away with a CWD-relative "../www/..." -- this process's CWD isn't the
+# worker's apps/ directory, so that relative path would silently 404 here.
+NEW_UI_STATIC_DIR = "/op25/op25/gr-op25_repeater/www/www-static"
+NEW_UI_IMAGES_DIR = "/op25/op25/gr-op25_repeater/www/images"
 
 
 def db():
@@ -234,7 +264,7 @@ def ensure_schema():
             changed.append("created sites table")
 
         # sites.rfid/stid -- P25's own site identifier (RFSS Status
-        # Broadcast), self-populated by history_poller() once a site is
+        # Broadcast), self-populated by persist_state() once a site is
         # activated and its own broadcast is observed. Roaming's neighbor
         # matcher matches on this exact pair scoped to system_id.
         if _table_exists(conn, "sites") and not _column_exists(conn, "sites", "rfid"):
@@ -744,17 +774,21 @@ def delete_channel(conn, cid):
     conn.commit()
 
 
-# ------------------------------------------------------ op25 live actions --
+# ---------------------------------------------------- worker live actions --
 
-def op25_send_command(command, arg1=0, arg2=0):
+def worker_send_command(command, arg1=0, arg2=0):
+    # Same shape post_req()/http_server.py has always accepted -- just
+    # dialed over loopback now instead of the old compose-network hostname.
+    # Used both for admin-triggered commands (apply_reload below) and to
+    # relay whatever main.js's New UI POSTs to / (see relay_to_worker()).
     body = json.dumps([{"command": command, "arg1": arg1, "arg2": arg2}]).encode()
-    req = urllib.request.Request(OP25_HTTP_URL, data=body, method="POST",
+    req = urllib.request.Request(WORKER_URL, data=body, method="POST",
                                   headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=3) as resp:
             return resp.status, resp.read()
     except urllib.error.URLError as e:
-        raise ApiError(502, f"could not reach op25: {e}")
+        raise ApiError(502, f"could not reach op25 worker: {e}")
 
 
 def apply_reload(conn, sid):
@@ -762,14 +796,15 @@ def apply_reload(conn, sid):
     # MVP limitation: arg2 (msgq_id) is hardcoded to 0, since this
     # deployment has exactly one channel. See docker/config/schema.sql /
     # the plan doc for the multi-channel follow-up.
-    status, _ = op25_send_command("reload", 0, 0)
+    status, _ = worker_send_command("reload", 0, 0)
     return {"status": "reload sent", "op25_status": status}
 
 
 def restart_op25():
-    # supervisord (running as op25's PID 1, see docker/op25/supervisord.conf)
-    # exposes an XML-RPC control interface on the compose network -- this
-    # restarts the op25 *process* in place, no Docker-level access needed.
+    # supervisord (running as PID 1 in this same container, see
+    # docker/op25/supervisord.conf) exposes a loopback-only XML-RPC control
+    # interface -- this restarts the worker *process* in place, no
+    # Docker-level access needed.
     server = xmlrpc.client.ServerProxy(OP25_SUPERVISOR_URL)
     try:
         try:
@@ -878,6 +913,83 @@ def static_file(environ, start_response):
         data = f.read()
     start_response("200 OK", [("Content-type", CONTENT_TYPES[suf]), ("Content-Length", str(len(data)))])
     return [data]
+
+
+# ------------------------------------------------ New UI static serving --
+# Ported from op25/gr-op25_repeater/apps/http_server.py::static_file(),
+# which used to serve these directly -- that process has no browser-facing
+# surface left at all now (see its module docstring). Two directories:
+# www-static (HTML/CSS/JS/ICO, fixed) and images (PNG/JPG/GIF -- the live
+# spectrum/waterfall plots the worker's flowgraph continuously rewrites).
+
+NEW_UI_CONTENT_TYPES = {
+    "png": "image/png", "jpeg": "image/jpeg", "jpg": "image/jpeg", "gif": "image/gif",
+    "css": "text/css", "js": "application/javascript", "html": "text/html", "ico": "image/x-icon",
+}
+NEW_UI_IMG_TYPES = {"png", "jpg", "jpeg", "gif"}
+
+
+def new_ui_static_file(environ, start_response):
+    path = environ["PATH_INFO"]
+    filename = "index.html" if path == "/" else re.sub(r"[^a-zA-Z0-9_.\-]", "", path)
+    suf = filename.split(".")[-1]
+    directory = NEW_UI_IMAGES_DIR if suf in NEW_UI_IMG_TYPES else NEW_UI_STATIC_DIR
+    full_path = os.path.join(directory, filename)
+    if suf not in NEW_UI_CONTENT_TYPES or ".." in filename or not os.access(full_path, os.R_OK):
+        start_response("404 Not Found", [("Content-type", "text/plain")])
+        return [b"404 not found"]
+    with open(full_path, "rb") as f:
+        data = f.read()
+    start_response("200 OK", [("Content-type", NEW_UI_CONTENT_TYPES[suf]), ("Content-Length", str(len(data)))])
+    return [data]
+
+
+# --------------------------------------------------------------------- SSE --
+# Ported from http_server.py::sse_stream()/sse_broadcaster -- same
+# per-connection queue.Queue() fan-out registry and 15s keepalive, just fed
+# by ingest_state_push() (below) instead of a self-timer, since state now
+# arrives via a push from the worker instead of this process polling itself.
+
+sse_clients = []
+sse_mutex = threading.Lock()
+
+
+def sse_stream():
+    q = queue.Queue()
+    with sse_mutex:
+        sse_clients.append(q)
+    try:
+        while True:
+            try:
+                data = q.get(timeout=15)
+                yield ("data: %s\n\n" % data).encode()
+            except queue.Empty:
+                yield b": keepalive\n\n"
+    finally:
+        with sse_mutex:
+            try:
+                sse_clients.remove(q)
+            except ValueError:
+                pass
+
+
+def relay_to_worker(environ, start_response):
+    # What main.js's send_command()/fetch('/', ...) actually hits now --
+    # a transparent passthrough to the worker's internal command port, byte
+    # for byte, so nothing on the browser side needed to change.
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    raw = environ["wsgi.input"].read(length) if length else b"[]"
+    req = urllib.request.Request(WORKER_URL, data=raw, method="POST",
+                                  headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = resp.read()
+    except urllib.error.URLError as e:
+        out = json.dumps({"error": f"could not reach op25 worker: {e}"}).encode()
+        start_response("502 Bad Gateway", [("Content-type", "application/json"), ("Content-Length", str(len(out)))])
+        return [out]
+    start_response("200 OK", [("Content-type", "application/json"), ("Content-Length", str(len(body)))])
+    return [body]
 
 
 REQUIRED_TABLES = {
@@ -989,16 +1101,24 @@ def export_db(environ, start_response):
     return [data]
 
 
-# --------------------------------------------------------- history poller --
+# --------------------------------------------------------- state ingest --
 #
-# Subscriber registrations and call history both only ever exist in op25's
-# own in-memory state (registered_wuids / call_log) -- ephemeral there
-# (registrations expire per TIA-102.AABD, call_log is a small ring buffer).
-# This polls op25's existing 'update' command on a timer and persists
-# whatever's new into subscriber_registrations / call_history, entirely
-# from config-api's side -- op25 itself is untouched by this (beyond the
-# call_log non-destructive-read fix, which was a correctness fix needed
-# regardless of who polls it).
+# Subscriber registrations and call history both only ever exist in the
+# worker's own in-memory state (registered_wuids / call_log) -- ephemeral
+# there (registrations expire per TIA-102.AABD, call_log is a small ring
+# buffer). persist_state() below extracts whatever's new out of a pushed
+# 'update' response and writes it into subscriber_registrations /
+# call_history -- entirely on this side, the worker itself is untouched by
+# this (beyond the call_log non-destructive-read fix, a correctness fix
+# needed regardless of who reads it).
+#
+# Used to be pulled: this process polled the worker's HTTP command port on
+# a timer (op25_send_command("update", ...)). Now it's pushed: the worker's
+# own state_pusher thread (http_server.py) POSTs the same 'update' response
+# here once a second, and ingest_state_push() (further down) calls
+# persist_state() against whatever arrives -- no more self-initiated
+# polling loop on this side, and no more separate 1s SSE self-poll on the
+# worker's side either (that was http_server.py's old sse_broadcaster).
 
 def _active_site_id(conn):
     row = conn.execute("""
@@ -1040,23 +1160,11 @@ def _ensure_talkgroup_placeholder(conn, tag_set_id, tgid):
     )
 
 
-def poll_history_once(conn):
+def persist_state(conn, responses):
     site_id = _active_site_id(conn)
     if site_id is None:
         return  # no active site -- nothing is receiving RF, nothing to log
     tag_set_id = _active_tag_set_id(conn, site_id)
-
-    try:
-        status, body = op25_send_command("update", 0, 0)
-    except ApiError:
-        return  # op25 unreachable this cycle (e.g. still starting up) -- retry next tick
-    if status != 200:
-        return
-
-    try:
-        responses = json.loads(body)
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return
 
     trunk_update = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "trunk_update"), None)
     call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
@@ -1129,17 +1237,52 @@ def poll_history_once(conn):
     conn.commit()
 
 
-def history_poller():
-    while True:
+_last_persist_ts = 0.0
+_persist_lock = threading.Lock()
+
+
+def ingest_state_push(environ, start_response):
+    # POST target for the worker's state_pusher (http_server.py) -- arrives
+    # roughly once a second. Order matters here: persist against the FULL
+    # payload (including call_log) first, THEN build the call_log-stripped
+    # copy for SSE broadcast -- stripping first would silently kill history
+    # capture with no error, since persist_state() reads call_log too.
+    length = int(environ.get("CONTENT_LENGTH") or 0)
+    raw = environ["wsgi.input"].read(length) if length else b"[]"
+    try:
+        responses = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        start_response("400 Bad Request", [("Content-type", "application/json")])
+        return [b'{"error": "invalid JSON body"}']
+
+    global _last_persist_ts
+    now = time.time()
+    with _persist_lock:
+        should_persist = (now - _last_persist_ts) >= HISTORY_POLL_INTERVAL
+        if should_persist:
+            _last_persist_ts = now
+    if should_persist:
+        conn = db()
         try:
-            conn = db()
-            try:
-                poll_history_once(conn)
-            finally:
-                conn.close()
+            persist_state(conn, responses)
         except Exception as e:
-            sys.stderr.write(f"history_poller: unexpected error: {e}\n")
-        time.sleep(HISTORY_POLL_INTERVAL)
+            sys.stderr.write(f"ingest_state_push: persist failed: {e}\n")
+        finally:
+            conn.close()
+
+    # main.js's SSE handler never consumes call_log (history comes from this
+    # DB now, not a live push) -- strip it before broadcasting. Same
+    # optimization as before, just relocated here from the worker's
+    # now-removed sse_broadcaster.
+    sse_payload = json.dumps(
+        [d for d in responses if not (isinstance(d, dict) and d.get("json_type") == "call_log")]
+    )
+    with sse_mutex:
+        for q in sse_clients:
+            q.put(sse_payload)
+
+    start_response("200 OK", [("Content-type", "application/json")])
+    return [b'{"status":"ok"}']
 
 
 # -------------------------------------------------------------- analysis --
@@ -1320,6 +1463,33 @@ def application(environ, start_response):
     return [json.dumps({"error": "no such route"}).encode()]
 
 
+def new_ui_application(environ, start_response):
+    # Everything a browser's New UI talks to: static assets, SSE, and the
+    # POST / command relay. Same-origin relative URLs in main.js
+    # (EventSource("/events"), fetch("/", ...)) mean zero browser changes
+    # were needed to move this here from the worker's old http_server.py.
+    method = environ["REQUEST_METHOD"]
+    path = environ["PATH_INFO"]
+    if method == "GET" and path == "/events":
+        start_response("200 OK", [("Content-type", "text/event-stream"), ("Cache-Control", "no-cache")])
+        return sse_stream()
+    if method == "POST" and path == "/":
+        return relay_to_worker(environ, start_response)
+    if method == "GET":
+        return new_ui_static_file(environ, start_response)
+    start_response("404 Not Found", [("Content-type", "text/plain")])
+    return [b"not found"]
+
+
+def ingest_application(environ, start_response):
+    # 127.0.0.1-only (see main()) -- the worker's state_pusher is the only
+    # intended caller.
+    if environ["REQUEST_METHOD"] == "POST" and environ["PATH_INFO"] == "/internal/state_push":
+        return ingest_state_push(environ, start_response)
+    start_response("404 Not Found", [("Content-type", "text/plain")])
+    return [b"not found"]
+
+
 class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
     daemon_threads = True
 
@@ -1332,11 +1502,19 @@ def main():
             ensure_schema()
         except sqlite3.Error as e:
             sys.stderr.write(f"ensure_schema: failed, continuing anyway: {e}\n")
-    threading.Thread(target=history_poller, daemon=True).start()
-    httpd = make_server("0.0.0.0", LISTEN_PORT, application, server_class=ThreadingWSGIServer)
-    sys.stderr.write(f"config-api listening on :{LISTEN_PORT}, db={DB_PATH}, op25={OP25_HTTP_URL}, "
-                      f"history_poll_interval={HISTORY_POLL_INTERVAL}s\n")
-    httpd.serve_forever()
+
+    admin_httpd = make_server("0.0.0.0", ADMIN_PORT, application, server_class=ThreadingWSGIServer)
+    new_ui_httpd = make_server("0.0.0.0", NEW_UI_PORT, new_ui_application, server_class=ThreadingWSGIServer)
+    ingest_httpd = make_server("127.0.0.1", INGEST_PORT, ingest_application, server_class=ThreadingWSGIServer)
+
+    threading.Thread(target=new_ui_httpd.serve_forever, daemon=True).start()
+    threading.Thread(target=ingest_httpd.serve_forever, daemon=True).start()
+
+    sys.stderr.write(
+        f"server listening: new_ui=:{NEW_UI_PORT} admin=:{ADMIN_PORT} ingest=127.0.0.1:{INGEST_PORT}, "
+        f"db={DB_PATH}, worker={WORKER_URL}, history_persist_interval={HISTORY_POLL_INTERVAL}s\n"
+    )
+    admin_httpd.serve_forever()
 
 
 if __name__ == "__main__":

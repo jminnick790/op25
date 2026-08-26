@@ -14,13 +14,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    strategy:
-      matrix:
-        include:
-          - image: op25
-            dockerfile: docker/op25/Dockerfile
-          - image: op25-config-api
-            dockerfile: docker/config-api/Dockerfile
     steps:
       - uses: actions/checkout@v4
 
@@ -32,13 +25,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Single image now -- config-api was folded into op25 as a second
+      # supervisord-managed process (docker/op25/supervisord.conf) rather
+      # than staying a separate container/image. See docker/op25/Dockerfile.
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ matrix.dockerfile }}
+          file: docker/op25/Dockerfile
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:latest
-            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/op25:latest
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/op25:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

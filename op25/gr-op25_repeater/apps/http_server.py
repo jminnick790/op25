@@ -1,18 +1,18 @@
 # Copyright 2017, 2018 Max H. Parke KA1RBI
 # Copyright 2026  Graham J. Norbury
-# 
+#
 # This file is part of OP25
-# 
+#
 # OP25 is free software; you can redistribute it and/or modify it
 # under the terms of the GNU General Public License as published by
 # the Free Software Foundation; either version 3, or (at your option)
 # any later version.
-# 
+#
 # OP25 is distributed in the hope that it will be useful, but WITHOUT
 # ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 # or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public
 # License for more details.
-# 
+#
 # You should have received a copy of the GNU General Public License
 # along with OP25; see the file COPYING. If not, write to the Free
 # Software Foundation, Inc., 51 Franklin Street, Boston, MA
@@ -21,14 +21,14 @@
 import sys
 import os
 import time
-import re
 import json
 import socket
 import traceback
 import threading
 import uuid
 import collections
-import queue
+import urllib.request
+import urllib.error
 
 from gnuradio import gr
 from waitress.server import create_server
@@ -43,42 +43,22 @@ my_uuids = []
 q_mutex = threading.Lock()
 u_mutex = threading.Lock()
 
-# SSE state-push support (GET /events) -- see sse_stream()/sse_broadcaster
-# below. Separate lock from q_mutex/u_mutex: this list is only ever touched
-# by sse_stream() (on connect/disconnect) and sse_broadcaster (on each
-# broadcast tick), never by the existing post_req()/queue_watcher path.
-sse_clients = []
-sse_mutex = threading.Lock()
+# Where the persistent "server" process (docker/config-api/app.py) listens
+# for pushed state -- see state_pusher below. Both processes are guaranteed
+# co-located in the same container (docker/op25/supervisord.conf runs them
+# side by side), so this is loopback-only and not worth making configurable.
+SERVER_INGEST_URL = "http://127.0.0.1:8092/internal/state_push"
 
 
 """
-fake http and ajax server module
+op25's internal command/RPC server -- reachable only from the "server"
+process on 127.0.0.1 (see db_config.py's terminal_type), never directly by
+browsers. Everything browser-facing (static files, SSE, the public POST /
+a browser's New UI actually calls) lives in "server" now, which is never
+restarted for topology changes the way this process is -- see
+supervisord.conf for the restart-domain split this exists to support.
 TODO: make less fake
 """
-
-def static_file(environ, start_response):
-    content_types = { 'png': 'image/png', 'jpeg': 'image/jpeg', 'jpg': 'image/jpeg', 'gif': 'image/gif', 'css': 'text/css', 'js': 'application/javascript', 'html': 'text/html', 'ico' : 'image/x-icon'}
-    img_types = 'png jpg jpeg gif'.split()
-    if environ['PATH_INFO'] == '/':
-        filename = 'index.html'
-    else:
-        filename = re.sub(r'[^a-zA-Z0-9_.\-]', '', environ['PATH_INFO'])
-    suf = filename.split('.')[-1]
-    pathname = '../www/www-static'
-    if suf in img_types:
-        pathname = '../www/images'
-    pathname = '%s/%s' % (pathname, filename)
-    if suf not in list(content_types.keys()) or '..' in filename or not os.access(pathname, os.R_OK):
-        sys.stderr.write('404 %s\n' % pathname)
-        status = '404 NOT FOUND'
-        content_type = 'text/plain'
-        output = status
-    else:
-        with open(pathname, 'rb') as f:
-            output = f.read()
-        content_type = content_types[suf]
-        status = '200 OK'
-    return status, content_type, output
 
 def post_req(environ, start_response, postdata):
     global my_input_q, my_output_q, my_recv_q, my_port, q_mutex, u_mutex
@@ -125,7 +105,7 @@ def post_req(environ, start_response, postdata):
         try:
             my_uuids.remove(post_uuid)
         except (ValueError):
-            pass    
+            pass
     status = '200 OK'
     content_type = 'application/json'
     output = json.dumps(resp_msg)
@@ -133,17 +113,17 @@ def post_req(environ, start_response, postdata):
     return status, content_type, output
 
 def http_request(environ, start_response):
-    if environ['REQUEST_METHOD'] == 'GET':
-        status, content_type, output = static_file(environ, start_response)
-    elif environ['REQUEST_METHOD'] == 'POST':
+    if environ['REQUEST_METHOD'] == 'POST':
         postdata = environ['wsgi.input'].read()
         status, content_type, output = post_req(environ, start_response, postdata)
     else:
-        status = '200 OK'
+        # GET/static serving lives in "server" now -- this process has no
+        # browser-facing surface left at all.
+        status = '404 NOT FOUND'
         content_type = 'text/plain'
         output = status
-        sys.stderr.write('http_request: unexpected input %s\n' % environ['PATH_INFO'])
-    
+        sys.stderr.write('http_request: unexpected input %s %s\n' % (environ['REQUEST_METHOD'], environ['PATH_INFO']))
+
     response_headers = [('Content-type', content_type),
                         ('Content-Length', str(len(output)))]
     start_response(status, response_headers)
@@ -154,39 +134,11 @@ def http_request(environ, start_response):
 
     return [output]
 
-def sse_stream():
-    # WSGI response body for GET /events -- a generator Waitress iterates,
-    # streaming each yielded chunk and holding the connection open, rather
-    # than the fully-materialized [bytes] every other response here returns.
-    # Registers its own queue so sse_broadcaster() can push to it; a 15s
-    # idle timeout sends an SSE comment (": keepalive") instead of new data,
-    # both to keep proxies/browsers from timing the connection out and to
-    # bound how long a dead connection can go before Waitress's next write
-    # attempt fails and this generator gets torn down (GeneratorExit can
-    # only be delivered at a yield, so cleanup is bounded by this loop's
-    # own cadence, not instant).
-    q = queue.Queue()
-    with sse_mutex:
-        sse_clients.append(q)
-    try:
-        while True:
-            try:
-                data = q.get(timeout=15)
-                yield ("data: %s\n\n" % data).encode()
-            except queue.Empty:
-                yield b": keepalive\n\n"
-    finally:
-        with sse_mutex:
-            try:
-                sse_clients.remove(q)
-            except ValueError:
-                pass
-
 def _synth_update_request():
     # Internal equivalent of post_req() receiving a POST body of
     # [{"command":"update","arg1":0,"arg2":0}] -- same push-onto-
     # my_output_q / poll-my_recv_q-by-uuid mechanism, just synthesized by
-    # sse_broadcaster() on a timer instead of triggered by an actual HTTP
+    # state_pusher() on a timer instead of triggered by an actual HTTP
     # request. Reuses the exact same state-computation path on the other
     # end (multi_rx.py's process_qmsg() 'update' branch) -- nothing about
     # how the JSON gets built changes, only who asks for it.
@@ -221,7 +173,14 @@ def _synth_update_request():
             pass
     return resp_msg
 
-class sse_broadcaster(threading.Thread):
+class state_pusher(threading.Thread):
+    # Replaces sse_broadcaster: instead of fanning state out to in-process
+    # SSE clients (there are none here anymore -- SSE lives entirely in
+    # "server" now), this pushes state OUT to "server"'s ingest endpoint.
+    # Runs unconditionally on every tick, since this side has no way to
+    # know whether "server" currently has any browsers connected -- a
+    # fixed, cheap cost (one _synth_update_request() call/sec, the same
+    # cost this process always paid for this), not an oversight.
     def __init__(self, interval=1.0, **kwds):
         threading.Thread.__init__(self, **kwds)
         self.setDaemon(1)
@@ -231,35 +190,21 @@ class sse_broadcaster(threading.Thread):
     def run(self):
         while True:
             time.sleep(self.interval)
-            with sse_mutex:
-                have_clients = len(sse_clients) > 0
-            if not have_clients:
-                continue    # nobody listening -- skip the RPC round-trip entirely
             resp = _synth_update_request()
             if resp is None:
                 continue    # op25 didn't reply within the timeout this tick -- retry next tick
-            # main.js's SSE handler dispatches through the same handle_response()
-            # table as the POST-poll, but its call_log entry is commented out
-            # there (history now comes from config-api/SQLite) -- so call_log is
-            # dead weight on this path specifically. It's still needed on the
-            # POST path (config-api's own poller reads it from that response to
-            # populate call_history), so only strip it here, not in post_req().
-            resp = [d for d in resp if d.get('json_type') != 'call_log']
-            data = json.dumps(resp)
-            with sse_mutex:
-                for q in sse_clients:
-                    q.put(data)
+            data = json.dumps(resp).encode()
+            req = urllib.request.Request(SERVER_INGEST_URL, data=data, method="POST",
+                                          headers={"Content-Type": "application/json"})
+            try:
+                urllib.request.urlopen(req, timeout=2).close()
+            except (urllib.error.URLError, OSError):
+                pass    # "server" not up yet / mid-restart -- next tick retries
 
 def application(environ, start_response):
-    if environ['REQUEST_METHOD'] == 'GET' and environ['PATH_INFO'] == '/events':
-        start_response('200 OK', [('Content-type', 'text/event-stream'),
-                                   ('Cache-Control', 'no-cache')])
-        return sse_stream()
-    failed = False
     try:
         result = http_request(environ, start_response)
     except Exception:
-        failed = True
         sys.stderr.write('application: request failed:\n%s\n' % traceback.format_exc())
         sys.exit(1)
     return result
@@ -274,7 +219,7 @@ def process_qmsg(msg):
         if "uuid" in m[0] and m[0]['uuid'] is not None: # first dict in list will contain uuid of originator
             m_uuid = m[0]['uuid']
             m[0].pop('uuid', None)
-        my_recv_q.append((m_uuid, m))   # collections.deque automatically limits queue size to maxlen items 
+        my_recv_q.append((m_uuid, m))   # collections.deque automatically limits queue size to maxlen items
       except (KeyError, ValueError):
         sys.stderr.write("process_qmsg: improperly formatted message=%s\n" % json.dumps(m))
 
@@ -290,7 +235,7 @@ class http_server(object):
 
         my_recv_q = collections.deque(maxlen = 10)
         self.q_watcher = queue_watcher(my_input_q, process_qmsg)
-        self.sse_broadcaster = sse_broadcaster()
+        self.state_pusher = state_pusher()
 
         try:
             self.server = create_server(application, host=host, port=my_port, threads=6)

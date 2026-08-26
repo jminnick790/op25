@@ -7,36 +7,49 @@ browser via OP25's own built-in WebSocket player -- no separate transcoding
 pipeline.
 
 ```
-antenna -> RTL-SDR -> Pi Zero 2W (rtl_tcp) -> LAN -> [op25] -> browser (New UI, WS audio)
-                                                          |
-                                                     [config-api] -> browser (admin UI)
+antenna -> RTL-SDR -> Pi Zero 2W (rtl_tcp) -> LAN -> [op25 container] -> browser
+                                                            |
+                                              worker (flowgraph)   server (UI/API/SSE)
+                                              restarts on Set        never restarts --
+                                              Active/DB import       stays connected
+                                                     |________push_______^
 ```
 
 ## How the pieces fit together
 
-- **`op25`** container builds this repo's `multi_rx.py` against GNU Radio
-  3.10 / gr-osmosdr and tunes a *remote* SDR over the network using
-  gr-osmosdr's `rtl_tcp=<host>:<port>` device arg -- no USB passthrough, no
-  privileged container. It reads its entire config (SDR device, physical
-  channel, every site's definition, talkgroup names, white/black
-  lists) from a SQLite database rather than the JSON/TSV files earlier
-  versions of this MVP used. Decoded call audio goes out over OP25's
-  built-in raw-PCM WebSocket server, which the New UI's audio player
-  connects to directly -- no transcoding/Icecast hop.
-- **`config-api`** container is a small sidecar (stdlib-only Python, no
-  new dependencies) exposing REST CRUD + a browser admin UI for systems
-  (logical networks like "NC VIPER"), sites (individual physical radio
-  sites), talkgroups, categories (RadioReference-style groupings), devices/
-  channels, and white/blacklists, all backed by the same SQLite file
-  `op25` reads. Its "Set Active" action (and DB import) restart `op25`
-  after a site/device/channel change (anything structural always needs
-  a restart -- talkgroup/list edits can apply live via "Apply", no
-  restart, since `op25` re-queries the DB in place for those). That
-  restart goes through supervisord's control interface inside the `op25`
-  container itself (see `docker/op25/supervisord.conf`), not the Docker
-  socket -- `config-api` has no Docker-level access to the host at all.
+One container, one image, two supervisord-managed processes (see
+`docker/op25/supervisord.conf`) split by restart domain -- config-api used
+to be a genuinely separate container; it's now the `server` process below,
+folded in so the whole stack is one deployable unit with a single source
+of truth instead of two containers coordinating over HTTP:
 
-Both containers share the config DB through a named Docker volume
+- **`worker`** (`multi_rx.py`) builds this repo's C++/GNU Radio blocks and
+  tunes a *remote* SDR over the network using gr-osmosdr's
+  `rtl_tcp=<host>:<port>` device arg -- no USB passthrough, no privileged
+  container. It reads its entire config (SDR device, physical channel,
+  every site's definition, talkgroup names, white/black lists) from a
+  SQLite database at startup. Decoded call audio goes out over OP25's
+  built-in raw-PCM WebSocket server, which the New UI's audio player
+  connects to directly -- no transcoding/Icecast hop. This is the only
+  process ever restarted for a topology change (Set Active, DB import) --
+  GNU Radio's flowgraph can't be reconfigured live, so a full restart is
+  unavoidable for those, but it's now scoped to just this process instead
+  of taking the whole stack down with it.
+- **`server`** (stdlib-only Python, no new dependencies) is a persistent
+  process -- never restarted for topology changes -- that owns everything
+  browser-facing: the New UI's static assets and live SSE state stream
+  (`GET /events`), the admin UI + REST CRUD for systems (logical networks
+  like "NC VIPER"), sites (individual physical radio sites), talkgroups,
+  categories, devices/channels, and white/blacklists, plus subscriber
+  registration/call history capture. It relays browser commands (tune,
+  hold, lockout, reload) to `worker` over a loopback-only internal port,
+  and `worker` pushes live state back to `server` the same way (a small
+  internal port `server` alone can reach) -- no cross-container polling
+  either direction. "Set Active" (and DB import) restart `worker` via
+  supervisord's loopback-only control interface, not the Docker socket --
+  `server` has no Docker-level access to the host at all.
+
+Both processes share the config DB through a named Docker volume
 (`op25-config-db`), not a bind mount -- see `docker/config/schema.sql` for
 the schema.
 
@@ -85,20 +98,20 @@ cp .env.example .env
 (`OP25_HTTP_HOST_PORT`, `OP25_WS_AUDIO_HOST_PORT`, `CONFIG_API_HOST_PORT`)
 -- the SDR device (host/port/gain/ppm), system/site definitions,
 talkgroups, and which site is active all live in the SQLite DB now, set
-through config-api's UI rather than env vars or bind-mounted files.
+through the admin UI rather than env vars or bind-mounted files.
 
 ## 3. Get a config DB in place
 
-`op25` and `config-api` both expect `/data/op25.db` to exist in the
-`op25-config-db` named volume. Two ways to get one there:
+Both the `worker` and `server` processes expect `/data/op25.db` to exist
+in the `op25-config-db` named volume. Two ways to get one there:
 
 - **First-time setup**: run `docker/config/migrate_json_to_sqlite.py`
   against a `multi_rx.json`-style config to seed a fresh DB (see the
   script's docstring), or just add your first site/talkgroups by hand
-  through config-api's UI once it's up (an empty DB is fine to start
+  through the admin UI once it's up (an empty DB is fine to start
   `docker compose up` against -- `op25` will just have nothing to decode
   until a site + channel exist).
-- **Moving from another deployment**: use that deployment's config-api
+- **Moving from another deployment**: use that deployment's admin UI
   "Export Config" button to download its `op25.db`, then:
   ```
   docker cp op25-config-<timestamp>.db op25:/data/op25.db
@@ -138,7 +151,7 @@ for that.
 - **`op25` can't reach the SDR**: confirm `rtl_tcp` is running on the Pi
   and reachable from the Docker host (`nc -zv <pi-ip> <port>`); the Docker
   host and Pi need to be on the same LAN (or otherwise routed).
-- **Edited a talkgroup/list in config-api but don't see it change**:
+- **Edited a talkgroup/list in the admin UI but don't see it change**:
   click "Apply" on that site's row (only does something if that site
   is the currently *active* one), then wait for that talkgroup to
   transmit again -- the New UI's tag display is a client-side cache
@@ -147,7 +160,7 @@ for that.
 - **Choppy/garbled audio**: usually an RF/SDR gain issue on the Pi side,
   or the device's sample rate too high for the Pi's WiFi link to
   `rtl_tcp` clients -- adjust via the device's `rate`/`gains` fields on
-  config-api's Devices tab, then restart `op25` to apply.
+  the admin UI's Devices tab, then restart `op25` to apply.
 
 ## Out of scope for now
 

@@ -93,9 +93,13 @@ def build_config_from_db(db_path):
             "trunking": {"module": "tk_p25.py", "chans": chans},
             # Not part of the DB-editable CRUD surface (not requested) --
             # hardcoded to match the values multi_rx.json has always used.
+            # terminal_type is loopback-only and on a non-public port: the
+            # "server" process (docker/config-api/app.py) is what browsers
+            # actually talk to now, relaying commands to this port -- see
+            # http_server.py's module docstring for the split rationale.
             "terminal": {
                 "module": "terminal.py",
-                "terminal_type": "http:0.0.0.0:8080",
+                "terminal_type": "http:127.0.0.1:8082",
                 "curses_plot_interval": 0.1,
                 "http_plot_interval": 1.0,
                 "http_plot_directory": "../www/images",

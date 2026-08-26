@@ -80,11 +80,22 @@ COPY docker/op25/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/op25/entrypoint-multi.sh /usr/local/bin/entrypoint-multi.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/entrypoint-multi.sh
 
+# The persistent "server" process (SQLite CRUD API + admin UI + New UI
+# static serving + SSE broadcast -- see app.py) -- formerly a separate
+# config-api container/image, folded in here so the whole stack is one
+# deployable unit. Stdlib only, no pip installs needed for it.
+COPY docker/config-api/app.py /usr/local/bin/server/app.py
+COPY docker/config-api/static /usr/local/bin/server/static
+COPY docker/config/schema.sql /usr/local/bin/server/schema.sql
+COPY docker/config/migrate_json_to_sqlite.py /usr/local/bin/server/migrate_json_to_sqlite.py
+
 COPY docker/op25/supervisord.conf /etc/supervisor/supervisord.conf
 
-# HTTP status/terminal interface, WebSocket audio (multi_rx.py only).
-# 9001 is supervisord's control interface for config-api to restart the
-# op25 process -- deliberately not published to the host, see docker-compose.yml.
-EXPOSE 8080 8081 9001
+# 8080/8091 are both served by the "server" process (New UI+SSE, admin
+# UI+API); 8081 is multi_rx.py's raw PCM WebSocket audio. supervisord's own
+# control interface (9001) is loopback-only now that "server" and the
+# GNU Radio worker are guaranteed co-located -- nothing outside the
+# container can reach it, so it's deliberately not EXPOSEd.
+EXPOSE 8080 8081 8091
 
 ENTRYPOINT ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
