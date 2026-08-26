@@ -273,6 +273,19 @@ def ensure_schema():
             conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_system_rfid_stid ON sites(system_id, rfid, stid)")
             changed.append("added sites.rfid/stid")
 
+        # systems.roaming_enabled/roaming_stale_seconds -- opt-in automatic
+        # site handoff, see schema.sql's comment on these columns.
+        if _table_exists(conn, "systems") and not _column_exists(conn, "systems", "roaming_enabled"):
+            conn.execute("ALTER TABLE systems ADD COLUMN roaming_enabled INTEGER NOT NULL DEFAULT 0")
+            conn.execute("ALTER TABLE systems ADD COLUMN roaming_stale_seconds INTEGER")
+            changed.append("added systems.roaming_enabled/roaming_stale_seconds")
+
+        # channels.role -- 'primary' (default) or 'scout' (roaming's
+        # dedicated neighbor-scouting receiver, never voice-eligible).
+        if _table_exists(conn, "channels") and not _column_exists(conn, "channels", "role"):
+            conn.execute("ALTER TABLE channels ADD COLUMN role TEXT NOT NULL DEFAULT 'primary'")
+            changed.append("added channels.role")
+
         # subscriber_registrations / call_history
         if not _table_exists(conn, "subscriber_registrations"):
             conn.execute("""
@@ -459,10 +472,12 @@ def get_system(conn, sysid):
 
 def create_system(conn, body):
     cur = conn.execute(
-        """INSERT INTO systems (name, tag_set_id, whitelist_id, blacklist_id, notes)
-           VALUES (?, ?, ?, ?, ?)""",
+        """INSERT INTO systems (name, tag_set_id, whitelist_id, blacklist_id, notes,
+                                 roaming_enabled, roaming_stale_seconds)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (body["name"], body.get("tag_set_id"), body.get("whitelist_id"),
-         body.get("blacklist_id"), body.get("notes")),
+         body.get("blacklist_id"), body.get("notes"),
+         1 if body.get("roaming_enabled") else 0, body.get("roaming_stale_seconds")),
     )
     conn.commit()
     return get_system(conn, cur.lastrowid)
@@ -470,12 +485,16 @@ def create_system(conn, body):
 
 def update_system(conn, sysid, body):
     get_system(conn, sysid)  # 404 if missing
-    fields = ["name", "tag_set_id", "whitelist_id", "blacklist_id", "notes"]
+    fields = ["name", "tag_set_id", "whitelist_id", "blacklist_id", "notes",
+              "roaming_enabled", "roaming_stale_seconds"]
     sets, vals = [], []
     for f in fields:
         if f in body:
+            v = body[f]
+            if f == "roaming_enabled":
+                v = 1 if v else 0
             sets.append(f"{f} = ?")
-            vals.append(body[f])
+            vals.append(v)
     if sets:
         sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
         vals.append(sysid)
@@ -736,11 +755,12 @@ def list_channels(conn):
 def create_channel(conn, body):
     cur = conn.execute(
         """INSERT INTO channels
-           (name, device_id, trunking_system_id, demod_type, destination,
+           (name, device_id, trunking_system_id, role, demod_type, destination,
             meta_stream_name, excess_bw, filter_type, if_rate, symbol_rate, enable_analog)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             body["name"], body["device_id"], body.get("trunking_system_id"),
+            body.get("role", "primary"),
             body.get("demod_type", "cqpsk"), body["destination"],
             body.get("meta_stream_name", ""), body.get("excess_bw", 0.2),
             body.get("filter_type", "rc"), body.get("if_rate", 24000),
@@ -752,7 +772,7 @@ def create_channel(conn, body):
 
 
 def update_channel(conn, cid, body):
-    fields = ["name", "device_id", "trunking_system_id", "demod_type", "destination",
+    fields = ["name", "device_id", "trunking_system_id", "role", "demod_type", "destination",
               "meta_stream_name", "excess_bw", "filter_type", "if_rate", "symbol_rate", "enable_analog"]
     sets, vals = [], []
     for f in fields:
@@ -1121,9 +1141,14 @@ def export_db(environ, start_response):
 # worker's side either (that was http_server.py's old sse_broadcaster).
 
 def _active_site_id(conn):
+    # role='primary' is explicit (not just incidentally true because a scout
+    # channel's trunking_system_id is NULL and can't JOIN-match) -- a scout
+    # channel should never resolve as "the" active site even if one somehow
+    # ends up with a non-null trunking_system_id.
     row = conn.execute("""
         SELECT s.id FROM channels c
         JOIN sites s ON c.trunking_system_id = s.id
+        WHERE c.role = 'primary'
         LIMIT 1
     """).fetchone()
     return row["id"] if row else None
@@ -1161,37 +1186,47 @@ def _ensure_talkgroup_placeholder(conn, tag_set_id, tgid):
 
 
 def persist_state(conn, responses):
-    site_id = _active_site_id(conn)
-    if site_id is None:
-        return  # no active site -- nothing is receiving RF, nothing to log
-    tag_set_id = _active_tag_set_id(conn, site_id)
-
     trunk_update = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "trunk_update"), None)
     call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
+    active_channels = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "active_channels"), None)
+
+    # sysname -> site row, built once per push whenever anything below needs
+    # it (trunk_update entries, or a roam write-back). trunk_update carries
+    # one entry per CONFIGURED site (keys are positional indices, not
+    # NAC/sysid -- see tk_p25.py's rx_ctl.to_json()), not just the primary's
+    # active one -- a roaming scout channel genuinely observes a second site
+    # live too, so each entry resolves its OWN site here instead of every
+    # entry being attributed to one globally-resolved "active" site (which
+    # silently misattributed/dropped data the moment a second real receiver
+    # existed -- fixed here, not a roaming-specific hack).
+    sites_by_name = {}
+    if trunk_update or active_channels:
+        sites_by_name = {
+            row["sysname"]: row
+            for row in conn.execute(
+                "SELECT s.id, s.sysname, s.rfid, s.stid, sy.tag_set_id "
+                "FROM sites s LEFT JOIN systems sy ON s.system_id = sy.id"
+            )
+        }
 
     if trunk_update:
-        # Keys are positional indices (0, 1, 2...) per configured site, not
-        # NAC/sysid -- see tk_p25.py's rx_ctl.to_json(). Only the currently
-        # active site will ever have non-empty wuid_data (inactive sites
-        # never process real RF), so which index is which doesn't matter here.
-        #
-        # rfid/stid self-populate the active site's own P25 site identity
-        # (from its RFSS Status Broadcast) the first time it's observed --
-        # matched by sysname (val['system']) rather than position, since
-        # that's an unambiguous per-site field already present in each val.
-        site_row = conn.execute("SELECT sysname, rfid, stid FROM sites WHERE id=?", (site_id,)).fetchone()
-        if site_row:
-            for val in trunk_update.values():
-                if not isinstance(val, dict) or val.get("system") != site_row["sysname"]:
-                    continue
-                rfid, stid = val.get("rfid"), val.get("stid")
-                if rfid and stid and (rfid, stid) != (site_row["rfid"], site_row["stid"]):
-                    conn.execute("UPDATE sites SET rfid=?, stid=? WHERE id=?", (rfid, stid, site_id))
-                break
-
         for key, val in trunk_update.items():
             if key in ("json_type", "nac") or not isinstance(val, dict):
                 continue
+            site_row = sites_by_name.get(val.get("system"))
+            if site_row is None:
+                continue  # sysname not in this DB -- nothing to attribute this entry to
+            site_id, tag_set_id = site_row["id"], site_row["tag_set_id"]
+
+            # rfid/stid self-populate for ANY site actually being observed,
+            # not just the primary's active one -- a scout candidate's
+            # identity gets learned the same way, which also means a site a
+            # scout has evaluated no longer needs a manual "Set Active" first
+            # for roaming's neighbor-identity matching to resolve it.
+            rfid, stid = val.get("rfid"), val.get("stid")
+            if rfid and stid and (rfid, stid) != (site_row["rfid"], site_row["stid"]):
+                conn.execute("UPDATE sites SET rfid=?, stid=? WHERE id=?", (rfid, stid, site_id))
+
             for entry in val.get("wuid_data", {}).values():
                 if not isinstance(entry, dict) or entry.get("time") is None or entry.get("srcaddr") is None:
                     continue
@@ -1221,18 +1256,44 @@ def persist_state(conn, responses):
                      _epoch_to_iso(time.time())),
                 )
 
-    if call_log:
-        for entry in call_log.get("log", []):
-            if not isinstance(entry, dict) or entry.get("time") is None:
-                continue
-            _ensure_talkgroup_placeholder(conn, tag_set_id, entry.get("tgid"))
+    if active_channels and active_channels.get("primary_system"):
+        # Best-effort DB write-back after a successful roam, so a restart
+        # resumes near wherever the vehicle actually ended up rather than
+        # the original "Set Active" site -- see tk_p25.py's commit_roam().
+        # Deliberately just the single primary channel's target, matching
+        # every other single-primary-channel assumption already in this
+        # codebase (_active_site_id(), activate_site()) -- no msgq_id
+        # mapping needed since there's only ever one primary to update.
+        site_row = sites_by_name.get(active_channels["primary_system"])
+        if site_row is not None:
             conn.execute(
-                """INSERT OR IGNORE INTO call_history
-                   (trunked_system_id, time, freq, slot, prio, tgid, tgtag, rid, rtag)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (site_id, _epoch_to_iso(entry["time"]), entry.get("freq"), entry.get("slot"), entry.get("prio"),
-                 entry.get("tgid"), entry.get("tgtag"), entry.get("rid"), entry.get("rtag")),
+                "UPDATE channels SET trunking_system_id=? "
+                "WHERE role='primary' AND (trunking_system_id IS NULL OR trunking_system_id != ?)",
+                (site_row["id"], site_row["id"]),
             )
+
+    if call_log:
+        # Unlike trunk_update, a call_log entry carries no per-entry system
+        # identifier (tk_p25.py's log_call() records sysid/rcvr, not a
+        # sysname) -- but since scout channels are never voice-eligible by
+        # design (see channels.role in schema.sql), every call can only ever
+        # have come from the primary channel's current site, so attributing
+        # the whole batch to it is still correct, not the same shortcut this
+        # function used to take for trunk_update.
+        site_id = _active_site_id(conn)
+        if site_id is not None:
+            tag_set_id = _active_tag_set_id(conn, site_id)
+            for entry in call_log.get("log", []):
+                if not isinstance(entry, dict) or entry.get("time") is None:
+                    continue
+                _ensure_talkgroup_placeholder(conn, tag_set_id, entry.get("tgid"))
+                conn.execute(
+                    """INSERT OR IGNORE INTO call_history
+                       (trunked_system_id, time, freq, slot, prio, tgid, tgtag, rid, rtag)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (site_id, _epoch_to_iso(entry["time"]), entry.get("freq"), entry.get("slot"), entry.get("prio"),
+                     entry.get("tgid"), entry.get("tgtag"), entry.get("rid"), entry.get("rtag")),
+                )
 
     conn.commit()
 

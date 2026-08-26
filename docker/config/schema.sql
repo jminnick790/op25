@@ -65,14 +65,24 @@ CREATE INDEX idx_access_list_entries_list ON access_list_entries(access_list_id)
 -- A logical network (e.g. "NC VIPER", "Charlotte UASI") -- the things that
 -- apply across every site of that network, not to one tower.
 CREATE TABLE systems (
-    id           INTEGER PRIMARY KEY,
-    name         TEXT NOT NULL UNIQUE,
-    tag_set_id   INTEGER REFERENCES tag_sets(id) ON DELETE SET NULL,
-    whitelist_id INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
-    blacklist_id INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
-    notes        TEXT,
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    id                    INTEGER PRIMARY KEY,
+    name                  TEXT NOT NULL UNIQUE,
+    tag_set_id            INTEGER REFERENCES tag_sets(id) ON DELETE SET NULL,
+    whitelist_id          INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
+    blacklist_id          INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
+    notes                 TEXT,
+    -- Opt-in, default off: automatic handoff to a neighbor site within this
+    -- system when the active site's signal degrades (see roaming's scout
+    -- channel, tk_p25.py's rx_ctl.roam_tick()). A fixed base-station
+    -- deployment monitoring one known-good site should never wander off it
+    -- from a transient dip, hence default 0.
+    roaming_enabled       INTEGER NOT NULL DEFAULT 0 CHECK (roaming_enabled IN (0,1)),
+    -- NULL = use the hardcoded fallback default (ROAM_STALE_SECONDS_DEFAULT
+    -- in tk_p25.py). Only the fallback trigger (control-channel staleness);
+    -- the primary voice-BER trigger's threshold isn't per-system tunable.
+    roaming_stale_seconds INTEGER,
+    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 
 -- trunking.chans[] equivalent -- one physical radio site. Several sites can
@@ -125,6 +135,12 @@ CREATE TABLE channels (
     name                 TEXT NOT NULL,
     device_id            INTEGER NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
     trunking_system_id   INTEGER REFERENCES sites(id) ON DELETE SET NULL,  -- the field "Set Active" mutates
+    -- 'primary' (default) monitors/decodes normally and is eligible for
+    -- voice-grant assignment. 'scout' is dedicated to roaming: it never
+    -- takes a voice grant and never gets a static trunking_system_id (the
+    -- roaming coordinator points it at whichever neighbor it's currently
+    -- evaluating) -- see tk_p25.py's rx_ctl.add_receiver()/roam_tick().
+    role                 TEXT NOT NULL DEFAULT 'primary' CHECK (role IN ('primary','scout')),
     demod_type           TEXT NOT NULL DEFAULT 'cqpsk',
     destination          TEXT NOT NULL,
     meta_stream_name     TEXT NOT NULL DEFAULT '',
@@ -184,10 +200,11 @@ CREATE INDEX idx_callhist_rid ON call_history(trunked_system_id, rid, time);
 -- control channel, so we want current neighbors with a freshness
 -- timestamp, not a growing history of every rebroadcast. Populated from
 -- p25_system.adjacent_data (tk_p25.py), itself decoded from P25's
--- "adjacent status" TSBKs (opcodes 0x3c/0xfc/0xfe). Foundation for
--- eventual site-roaming: resolving a neighbor to one of this DB's own
--- sites rows (and thus which system it belongs to) is deliberately not
--- done here (see roaming plan).
+-- "adjacent status" TSBKs (opcodes 0x3c/0xfc/0xfe). Resolving a neighbor to
+-- one of this DB's own sites rows happens in-process at roam time (rx_ctl's
+-- (system_id, rfid, stid) -> p25_system map, tk_p25.py), not here -- this
+-- table is DB-side history/observability, not itself in the roaming
+-- decision's hot path.
 CREATE TABLE neighbor_sites (
     id                  INTEGER PRIMARY KEY,
     trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
@@ -207,4 +224,4 @@ CREATE TABLE neighbor_sites (
 );
 CREATE INDEX idx_neighbor_sites_system ON neighbor_sites(trunked_system_id);
 
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;

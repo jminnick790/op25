@@ -56,6 +56,14 @@ def build_config_from_db(db_path):
                 "blacklist": "",
                 "tgid_tags_file": "",
                 "rid_tags_file": "",
+                # rfid/stid (P25's own site identity) and the logical-group
+                # system_id (distinct from _db_system_id below, which is
+                # actually this SITE's own row id) -- roaming's neighbor
+                # matcher builds a (system_id, rfid, stid) -> p25_system map
+                # from these at startup (tk_p25.py's rx_ctl.__init__()).
+                "rfid": row["rfid"],
+                "stid": row["stid"],
+                "system_id": row["system_id"],
                 "_db_path": db_path,
                 "_db_system_id": row["id"],
                 "_db_tag_set_id": row["tag_set_id"],
@@ -64,15 +72,32 @@ def build_config_from_db(db_path):
             })
 
         channels = []
-        for row in conn.execute(
+        device_rows = list(conn.execute(
             """SELECT c.*, d.name AS device_name
                FROM channels c JOIN devices d ON c.device_id = d.id"""
-        ):
-            sysname = sys_id_to_sysname.get(row["trunking_system_id"], "undefined")
+        ))
+        # A scout channel has no static trunking_system_id (roaming points
+        # it dynamically -- see tk_p25.py) but still needs SOME resolvable
+        # sysname at startup, since add_receiver() requires one to construct
+        # a real p25_receiver at all. Bind it initially to wherever the
+        # primary channel starts.
+        primary_sysname = "undefined"
+        for row in device_rows:
+            if row["role"] == "primary" and row["trunking_system_id"] in sys_id_to_sysname:
+                primary_sysname = sys_id_to_sysname[row["trunking_system_id"]]
+                break
+        for row in device_rows:
+            if row["trunking_system_id"] in sys_id_to_sysname:
+                sysname = sys_id_to_sysname[row["trunking_system_id"]]
+            elif row["role"] == "scout":
+                sysname = primary_sysname
+            else:
+                sysname = "undefined"
             channels.append({
                 "name": row["name"],
                 "device": row["device_name"],
                 "trunking_sysname": sysname,
+                "role": row["role"],
                 "demod_type": row["demod_type"],
                 "destination": row["destination"],
                 "meta_stream_name": row["meta_stream_name"],
