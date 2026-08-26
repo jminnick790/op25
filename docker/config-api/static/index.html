@@ -8,7 +8,8 @@
 <body>
 <h1>OP25 Config</h1>
 <nav>
-  <button data-tab="systems" class="active">Systems</button>
+  <button data-tab="systems">Systems</button>
+  <button data-tab="sites" class="active">Sites</button>
   <button data-tab="talkgroups">Talkgroups</button>
   <button data-tab="lists">Access Lists</button>
   <button data-tab="devices">Devices</button>
@@ -17,29 +18,51 @@
   <button class="toggle-add" onclick="document.getElementById('import-file-input').click()">Import Config</button>
 </nav>
 
-<section id="tab-systems" class="active">
+<section id="tab-systems">
   <div class="toolbar">
-    <input id="sys-search" class="search" placeholder="Search systems (name, NAC, notes)..." oninput="filterTable('systems-table', this.value)">
-    <button class="toggle-add" onclick="toggleAdd('sys-add')">+ Add System</button>
+    <input id="system-search" class="search" placeholder="Search systems (name, notes)..." oninput="filterTable('systems-table', this.value)">
+    <button class="toggle-add" onclick="toggleAdd('system-add')">+ Add System</button>
   </div>
-  <div class="add-row" id="sys-add">
-    <div class="field"><label>Sysname</label><input id="sys-sysname"></div>
-    <div class="field"><label>NAC</label><input id="sys-nac" value="0x0" style="width:5em"></div>
-    <div class="field"><label>Control Channel List</label><input id="sys-ccl" style="width:18em"></div>
-    <div class="field"><label>Tag Set</label><select id="sys-tagset"></select></div>
-    <div class="field"><label>Blacklist</label><select id="sys-blacklist"></select></div>
-    <div class="field"><label>Notes</label><input id="sys-notes" style="width:16em"></div>
+  <div class="add-row" id="system-add">
+    <div class="field"><label>Name</label><input id="system-name" style="width:16em"></div>
+    <div class="field"><label>Tag Set</label><select id="system-tagset"></select></div>
+    <div class="field"><label>Whitelist</label><select id="system-whitelist"></select></div>
+    <div class="field"><label>Blacklist</label><select id="system-blacklist"></select></div>
+    <div class="field"><label>Notes</label><input id="system-notes" style="width:16em"></div>
     <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSystem()">Add</button></div>
+  </div>
+  <p class="hint">A system is a logical network (e.g. "NC VIPER") that several sites on the Sites tab can belong to. The talkgroup tag set and white/blacklist apply here, once, to every site of the system.</p>
+  <div class="table-wrap">
+  <table id="systems-table">
+    <colgroup><col style="width:20%"><col style="width:18%"><col style="width:18%"><col style="width:18%"><col style="width:14%"><col style="width:12%"></colgroup>
+    <thead><tr><th>Name</th><th>Tag Set</th><th>Whitelist</th><th>Blacklist</th><th class="truncate">Notes</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+  </div>
+</section>
+
+<section id="tab-sites" class="active">
+  <div class="toolbar">
+    <input id="site-search" class="search" placeholder="Search sites (name, NAC, notes)..." oninput="filterTable('sites-table', this.value)">
+    <button class="toggle-add" onclick="toggleAdd('site-add')">+ Add Site</button>
+  </div>
+  <div class="add-row" id="site-add">
+    <div class="field"><label>Sysname</label><input id="site-sysname"></div>
+    <div class="field"><label>NAC</label><input id="site-nac" value="0x0" style="width:5em"></div>
+    <div class="field"><label>Control Channel List</label><input id="site-ccl" style="width:18em"></div>
+    <div class="field"><label>System</label><select id="site-system"></select></div>
+    <div class="field"><label>Notes</label><input id="site-notes" style="width:16em"></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSite()">Add</button></div>
   </div>
   <p class="hint">Drag rows by the handle to reorder.</p>
   <div class="table-wrap">
-  <table id="systems-table">
+  <table id="sites-table">
     <colgroup>
       <col style="width:3%"><col style="width:15%"><col style="width:6%"><col style="width:18%">
-      <col style="width:9%"><col style="width:11%"><col style="width:6%">
-      <col style="width:20%"><col style="width:12%">
+      <col style="width:13%"><col style="width:6%">
+      <col style="width:27%"><col style="width:12%">
     </colgroup>
-    <thead><tr><th></th><th>Sysname</th><th>NAC</th><th class="truncate">Control Channels</th><th>Tag Set</th><th>Blacklist</th><th>Active</th><th class="truncate">Notes</th><th></th></tr></thead>
+    <thead><tr><th></th><th>Sysname</th><th>NAC</th><th class="truncate">Control Channels</th><th>System</th><th>Active</th><th class="truncate">Notes</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   </div>
@@ -140,15 +163,15 @@
   <div class="add-row" id="chan-add">
     <div class="field"><label>Name</label><input id="chan-name" style="width:14em"></div>
     <div class="field"><label>Device</label><select id="chan-device"></select></div>
-    <div class="field"><label>System</label><select id="chan-system"></select></div>
+    <div class="field"><label>Site</label><select id="chan-site"></select></div>
     <div class="field"><label>Destination</label><input id="chan-destination" style="width:18em" value="ws://0.0.0.0:8081"></div>
     <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createChannel()">Add</button></div>
   </div>
-  <p class="hint">Channels bind one device to one active system. Also always requires a restart -- use "Set Active" on the Systems tab for the common case of switching which system a channel points at.</p>
+  <p class="hint">Channels bind one device to one active site. Also always requires a restart -- use "Set Active" on the Sites tab for the common case of switching which site a channel points at.</p>
   <div class="table-wrap">
   <table id="channels-table">
     <colgroup><col style="width:16%"><col style="width:10%"><col style="width:18%"><col style="width:12%"><col style="width:24%"><col style="width:10%"><col style="width:10%"></colgroup>
-    <thead><tr><th>Name</th><th>Device</th><th>System</th><th>Demod</th><th>Destination</th><th>Analog</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Device</th><th>Site</th><th>Demod</th><th>Destination</th><th>Analog</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   </div>

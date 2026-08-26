@@ -111,12 +111,131 @@ def ensure_schema():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trunked_systems_sort_order ON trunked_systems(sort_order)")
             changed.append("added trunked_systems.sort_order")
 
+        # systems (new parent table: a logical network like "NC VIPER" that
+        # several sites belong to) + trunked_systems -> sites rename/split.
+        # Must run before subscriber_registrations/call_history/neighbor_sites
+        # below so their REFERENCES clause is created pointing at the right
+        # (final) table name on a fresh install.
+        if not _table_exists(conn, "systems"):
+            conn.execute("""
+                CREATE TABLE systems (
+                    id           INTEGER PRIMARY KEY,
+                    name         TEXT NOT NULL UNIQUE,
+                    tag_set_id   INTEGER REFERENCES tag_sets(id) ON DELETE SET NULL,
+                    whitelist_id INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
+                    blacklist_id INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
+                    notes        TEXT,
+                    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )
+            """)
+            changed.append("created systems table")
+
+        if _table_exists(conn, "trunked_systems") and not _table_exists(conn, "sites"):
+            # Live migration: trunked_systems has real data, sites doesn't
+            # exist yet. Group existing rows by their (tag_set_id,
+            # whitelist_id, blacklist_id) triple -- in practice this cleanly
+            # separates e.g. every NC VIPER site (shared tag_set) from every
+            # Charlotte UASI site -- and backfill one systems row per group,
+            # named from the common " - "-delimited sysname prefix.
+            groups = conn.execute(
+                "SELECT DISTINCT tag_set_id, whitelist_id, blacklist_id FROM trunked_systems"
+            ).fetchall()
+            group_to_system_id = {}
+            for g in groups:
+                key = (g["tag_set_id"], g["whitelist_id"], g["blacklist_id"])
+                sample = conn.execute(
+                    """SELECT sysname FROM trunked_systems
+                       WHERE tag_set_id IS ? AND whitelist_id IS ? AND blacklist_id IS ?
+                       ORDER BY sort_order LIMIT 1""",
+                    key,
+                ).fetchone()
+                base_name = sample["sysname"].split(" - ")[0].strip() if sample and " - " in sample["sysname"] \
+                    else (sample["sysname"] if sample else "System")
+                name = base_name
+                n = 1
+                while conn.execute("SELECT 1 FROM systems WHERE name=?", (name,)).fetchone():
+                    n += 1
+                    name = f"{base_name} ({n})"
+                cur = conn.execute(
+                    "INSERT INTO systems (name, tag_set_id, whitelist_id, blacklist_id) VALUES (?, ?, ?, ?)",
+                    (name, *key),
+                )
+                group_to_system_id[key] = cur.lastrowid
+
+            # ALTER TABLE ... RENAME TO gets SQLite's automatic cross-table
+            # REFERENCES-clause fixup for free (channels/subscriber_
+            # registrations/call_history/neighbor_sites all currently say
+            # "REFERENCES trunked_systems(id)" -- after this they all say
+            # "REFERENCES sites(id)" without those tables being touched).
+            # A plain DROP+recreate-under-the-same-name would NOT get this
+            # treatment, which is why the column-dropping part below happens
+            # as a separate step afterward, never by dropping this identity.
+            conn.execute("ALTER TABLE trunked_systems RENAME TO sites")
+
+            conn.execute("""
+                CREATE TABLE sites_new (
+                    id                    INTEGER PRIMARY KEY,
+                    system_id             INTEGER REFERENCES systems(id) ON DELETE SET NULL,
+                    sysname               TEXT NOT NULL UNIQUE,
+                    nac                   TEXT NOT NULL DEFAULT '0x0',
+                    control_channel_list  TEXT NOT NULL,
+                    tdma_cc               INTEGER NOT NULL DEFAULT 0 CHECK (tdma_cc IN (0,1)),
+                    crypt_behavior        INTEGER NOT NULL DEFAULT 1,
+                    notes                 TEXT,
+                    sort_order            INTEGER NOT NULL DEFAULT 0,
+                    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )
+            """)
+            old_rows = conn.execute("SELECT * FROM sites").fetchall()
+            for r in old_rows:
+                key = (r["tag_set_id"], r["whitelist_id"], r["blacklist_id"])
+                conn.execute(
+                    """INSERT INTO sites_new
+                       (id, system_id, sysname, nac, control_channel_list, tdma_cc,
+                        crypt_behavior, notes, sort_order, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (r["id"], group_to_system_id[key], r["sysname"], r["nac"], r["control_channel_list"],
+                     r["tdma_cc"], r["crypt_behavior"], r["notes"], r["sort_order"], r["created_at"], r["updated_at"]),
+                )
+            # Safe because PRAGMA foreign_keys is OFF for this whole connection
+            # and no DML happens in the brief gap where no table is named
+            # "sites" -- other tables' REFERENCES clauses (set by the RENAME
+            # above) never change again, they just keep saying "sites".
+            conn.execute("DROP TABLE sites")
+            conn.execute("ALTER TABLE sites_new RENAME TO sites")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_system ON sites(system_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_sort_order ON sites(sort_order)")
+            changed.append(f"migrated trunked_systems -> sites, backfilled {len(group_to_system_id)} systems rows")
+        elif not _table_exists(conn, "sites"):
+            # Truly fresh DB -- trunked_systems never existed either, nothing
+            # to migrate, just create sites at its final shape directly.
+            conn.execute("""
+                CREATE TABLE sites (
+                    id                    INTEGER PRIMARY KEY,
+                    system_id             INTEGER REFERENCES systems(id) ON DELETE SET NULL,
+                    sysname               TEXT NOT NULL UNIQUE,
+                    nac                   TEXT NOT NULL DEFAULT '0x0',
+                    control_channel_list  TEXT NOT NULL,
+                    tdma_cc               INTEGER NOT NULL DEFAULT 0 CHECK (tdma_cc IN (0,1)),
+                    crypt_behavior        INTEGER NOT NULL DEFAULT 1,
+                    notes                 TEXT,
+                    sort_order            INTEGER NOT NULL DEFAULT 0,
+                    created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                    updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_system ON sites(system_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_sort_order ON sites(sort_order)")
+            changed.append("created sites table")
+
         # subscriber_registrations / call_history
         if not _table_exists(conn, "subscriber_registrations"):
             conn.execute("""
                 CREATE TABLE subscriber_registrations (
                     id                  INTEGER PRIMARY KEY,
-                    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+                    trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
                     time                TEXT NOT NULL,
                     tgid                INTEGER,
                     tgid_tag            TEXT,
@@ -134,7 +253,7 @@ def ensure_schema():
             conn.execute("""
                 CREATE TABLE call_history (
                     id                  INTEGER PRIMARY KEY,
-                    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+                    trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
                     time                TEXT NOT NULL,
                     freq                INTEGER,
                     slot                INTEGER,
@@ -156,7 +275,7 @@ def ensure_schema():
             conn.execute("""
                 CREATE TABLE neighbor_sites (
                     id                  INTEGER PRIMARY KEY,
-                    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+                    trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
                     freq                INTEGER NOT NULL,
                     uplink              INTEGER,
                     rfid                INTEGER,
@@ -191,65 +310,64 @@ class ApiError(Exception):
 
 # ---------------------------------------------------------------- systems --
 
-def list_systems(conn):
+# ----------------------------------------------------------------- sites --
+# A site is one physical radio site (was "trunked_systems" -- see systems,
+# below, for the logical-network grouping several sites can share).
+
+def list_sites(conn):
     q = """
-    SELECT ts.*, tset.name AS tag_set_name,
-           wl.name AS whitelist_name, bl.name AS blacklist_name,
-           EXISTS(SELECT 1 FROM channels c WHERE c.trunking_system_id = ts.id) AS active
-    FROM trunked_systems ts
-    LEFT JOIN tag_sets tset ON ts.tag_set_id = tset.id
-    LEFT JOIN access_lists wl ON ts.whitelist_id = wl.id
-    LEFT JOIN access_lists bl ON ts.blacklist_id = bl.id
-    ORDER BY ts.sort_order, ts.sysname
+    SELECT s.*, sy.name AS system_name,
+           EXISTS(SELECT 1 FROM channels c WHERE c.trunking_system_id = s.id) AS active
+    FROM sites s
+    LEFT JOIN systems sy ON s.system_id = sy.id
+    ORDER BY s.sort_order, s.sysname
     """
     return rows_to_list(conn.execute(q))
 
 
-def reorder_systems(conn, body):
+def reorder_sites(conn, body):
     order = body.get("order", [])
     if not order:
-        raise ApiError(400, "missing 'order' array of system ids")
+        raise ApiError(400, "missing 'order' array of site ids")
     for i, sid in enumerate(order):
-        conn.execute("UPDATE trunked_systems SET sort_order = ? WHERE id = ?", (i, sid))
+        conn.execute("UPDATE sites SET sort_order = ? WHERE id = ?", (i, sid))
     conn.commit()
     return {"status": "reordered"}
 
 
-def get_system(conn, sid):
-    row = conn.execute("SELECT * FROM trunked_systems WHERE id = ?", (sid,)).fetchone()
+def get_site(conn, sid):
+    row = conn.execute("SELECT * FROM sites WHERE id = ?", (sid,)).fetchone()
     if row is None:
-        raise ApiError(404, "system not found")
+        raise ApiError(404, "site not found")
     return dict(row)
 
 
-def create_system(conn, body):
-    next_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM trunked_systems").fetchone()[0]
+def create_site(conn, body):
+    next_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM sites").fetchone()[0]
     cur = conn.execute(
-        """INSERT INTO trunked_systems
+        """INSERT INTO sites
            (sysname, nac, control_channel_list, tdma_cc, crypt_behavior,
-            tag_set_id, whitelist_id, blacklist_id, notes, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            system_id, notes, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             body["sysname"],
             body.get("nac", "0x0"),
             body.get("control_channel_list", ""),
             1 if body.get("tdma_cc") else 0,
             body.get("crypt_behavior", 1),
-            body.get("tag_set_id"),
-            body.get("whitelist_id"),
-            body.get("blacklist_id"),
+            body.get("system_id"),
             body.get("notes"),
             next_order,
         ),
     )
     conn.commit()
-    return get_system(conn, cur.lastrowid)
+    return get_site(conn, cur.lastrowid)
 
 
-def update_system(conn, sid, body):
-    get_system(conn, sid)  # 404 if missing
+def update_site(conn, sid, body):
+    get_site(conn, sid)  # 404 if missing
     fields = ["sysname", "nac", "control_channel_list", "tdma_cc", "crypt_behavior",
-              "tag_set_id", "whitelist_id", "blacklist_id", "notes"]
+              "system_id", "notes"]
     sets, vals = [], []
     for f in fields:
         if f in body:
@@ -261,14 +379,71 @@ def update_system(conn, sid, body):
     if sets:
         sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
         vals.append(sid)
-        conn.execute(f"UPDATE trunked_systems SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.execute(f"UPDATE sites SET {', '.join(sets)} WHERE id = ?", vals)
         conn.commit()
-    return get_system(conn, sid)
+    return get_site(conn, sid)
 
 
-def delete_system(conn, sid):
-    get_system(conn, sid)
-    conn.execute("DELETE FROM trunked_systems WHERE id = ?", (sid,))
+def delete_site(conn, sid):
+    get_site(conn, sid)
+    conn.execute("DELETE FROM sites WHERE id = ?", (sid,))
+    conn.commit()
+
+
+# --------------------------------------------------------------- systems --
+# A logical network (e.g. "NC VIPER") that several sites belong to -- the
+# talkgroup tag set / white/blacklist apply here, not per-site.
+
+def list_systems(conn):
+    q = """
+    SELECT sy.*, tset.name AS tag_set_name,
+           wl.name AS whitelist_name, bl.name AS blacklist_name
+    FROM systems sy
+    LEFT JOIN tag_sets tset ON sy.tag_set_id = tset.id
+    LEFT JOIN access_lists wl ON sy.whitelist_id = wl.id
+    LEFT JOIN access_lists bl ON sy.blacklist_id = bl.id
+    ORDER BY sy.name
+    """
+    return rows_to_list(conn.execute(q))
+
+
+def get_system(conn, sysid):
+    row = conn.execute("SELECT * FROM systems WHERE id = ?", (sysid,)).fetchone()
+    if row is None:
+        raise ApiError(404, "system not found")
+    return dict(row)
+
+
+def create_system(conn, body):
+    cur = conn.execute(
+        """INSERT INTO systems (name, tag_set_id, whitelist_id, blacklist_id, notes)
+           VALUES (?, ?, ?, ?, ?)""",
+        (body["name"], body.get("tag_set_id"), body.get("whitelist_id"),
+         body.get("blacklist_id"), body.get("notes")),
+    )
+    conn.commit()
+    return get_system(conn, cur.lastrowid)
+
+
+def update_system(conn, sysid, body):
+    get_system(conn, sysid)  # 404 if missing
+    fields = ["name", "tag_set_id", "whitelist_id", "blacklist_id", "notes"]
+    sets, vals = [], []
+    for f in fields:
+        if f in body:
+            sets.append(f"{f} = ?")
+            vals.append(body[f])
+    if sets:
+        sets.append("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        vals.append(sysid)
+        conn.execute(f"UPDATE systems SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.commit()
+    return get_system(conn, sysid)
+
+
+def delete_system(conn, sysid):
+    get_system(conn, sysid)
+    conn.execute("DELETE FROM systems WHERE id = ?", (sysid,))
     conn.commit()
 
 
@@ -506,10 +681,10 @@ def delete_device(conn, did):
 
 def list_channels(conn):
     q = """
-    SELECT c.*, d.name AS device_name, ts.sysname AS trunking_sysname
+    SELECT c.*, d.name AS device_name, s.sysname AS trunking_sysname
     FROM channels c
     JOIN devices d ON c.device_id = d.id
-    LEFT JOIN trunked_systems ts ON c.trunking_system_id = ts.id
+    LEFT JOIN sites s ON c.trunking_system_id = s.id
     ORDER BY c.name
     """
     return rows_to_list(conn.execute(q))
@@ -570,7 +745,7 @@ def op25_send_command(command, arg1=0, arg2=0):
 
 
 def apply_reload(conn, sid):
-    get_system(conn, sid)  # 404 if missing
+    get_site(conn, sid)  # 404 if missing
     # MVP limitation: arg2 (msgq_id) is hardcoded to 0, since this
     # deployment has exactly one channel. See docker/config/schema.sql /
     # the plan doc for the multi-channel follow-up.
@@ -595,11 +770,11 @@ def restart_op25():
         raise ApiError(502, f"could not restart op25 via supervisord: {e}")
 
 
-def activate_system(conn, sid):
-    get_system(conn, sid)  # 404 if missing
+def activate_site(conn, sid):
+    get_site(conn, sid)  # 404 if missing
     channel = conn.execute("SELECT id FROM channels LIMIT 1").fetchone()
     if channel is None:
-        raise ApiError(409, "no channel defined to activate this system on")
+        raise ApiError(409, "no channel defined to activate this site on")
     conn.execute("UPDATE channels SET trunking_system_id = ? WHERE id = ?", (sid, channel["id"]))
     conn.commit()
     status = restart_op25()
@@ -611,12 +786,18 @@ def activate_system(conn, sid):
 ROUTES = [
     ("GET", r"^/api/systems$", lambda conn, m, body, qs: list_systems(conn)),
     ("POST", r"^/api/systems$", lambda conn, m, body, qs: create_system(conn, body)),
-    ("POST", r"^/api/systems/reorder$", lambda conn, m, body, qs: reorder_systems(conn, body)),
     ("GET", r"^/api/systems/(?P<id>\d+)$", lambda conn, m, body, qs: get_system(conn, int(m["id"]))),
     ("PUT", r"^/api/systems/(?P<id>\d+)$", lambda conn, m, body, qs: update_system(conn, int(m["id"]), body)),
     ("DELETE", r"^/api/systems/(?P<id>\d+)$", lambda conn, m, body, qs: delete_system(conn, int(m["id"]))),
-    ("POST", r"^/api/systems/(?P<id>\d+)/apply_reload$", lambda conn, m, body, qs: apply_reload(conn, int(m["id"]))),
-    ("POST", r"^/api/systems/(?P<id>\d+)/activate$", lambda conn, m, body, qs: activate_system(conn, int(m["id"]))),
+
+    ("GET", r"^/api/sites$", lambda conn, m, body, qs: list_sites(conn)),
+    ("POST", r"^/api/sites$", lambda conn, m, body, qs: create_site(conn, body)),
+    ("POST", r"^/api/sites/reorder$", lambda conn, m, body, qs: reorder_sites(conn, body)),
+    ("GET", r"^/api/sites/(?P<id>\d+)$", lambda conn, m, body, qs: get_site(conn, int(m["id"]))),
+    ("PUT", r"^/api/sites/(?P<id>\d+)$", lambda conn, m, body, qs: update_site(conn, int(m["id"]), body)),
+    ("DELETE", r"^/api/sites/(?P<id>\d+)$", lambda conn, m, body, qs: delete_site(conn, int(m["id"]))),
+    ("POST", r"^/api/sites/(?P<id>\d+)/apply_reload$", lambda conn, m, body, qs: apply_reload(conn, int(m["id"]))),
+    ("POST", r"^/api/sites/(?P<id>\d+)/activate$", lambda conn, m, body, qs: activate_site(conn, int(m["id"]))),
 
     ("GET", r"^/api/tag_sets$", lambda conn, m, body, qs: list_tag_sets(conn)),
     ("POST", r"^/api/tag_sets$", lambda conn, m, body, qs: create_tag_set(conn, body)),
@@ -688,7 +869,7 @@ def static_file(environ, start_response):
 
 REQUIRED_TABLES = {
     "tag_sets", "talkgroups", "categories", "access_lists",
-    "access_list_entries", "trunked_systems", "devices", "channels",
+    "access_list_entries", "systems", "sites", "devices", "channels",
 }
 
 
@@ -806,10 +987,10 @@ def export_db(environ, start_response):
 # call_log non-destructive-read fix, which was a correctness fix needed
 # regardless of who polls it).
 
-def _active_system_id(conn):
+def _active_site_id(conn):
     row = conn.execute("""
-        SELECT ts.id FROM channels c
-        JOIN trunked_systems ts ON c.trunking_system_id = ts.id
+        SELECT s.id FROM channels c
+        JOIN sites s ON c.trunking_system_id = s.id
         LIMIT 1
     """).fetchone()
     return row["id"] if row else None
@@ -819,8 +1000,12 @@ def _epoch_to_iso(ts):
     return datetime.datetime.utcfromtimestamp(float(ts)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _active_tag_set_id(conn, system_id):
-    row = conn.execute("SELECT tag_set_id FROM trunked_systems WHERE id=?", (system_id,)).fetchone()
+def _active_tag_set_id(conn, site_id):
+    row = conn.execute("""
+        SELECT sy.tag_set_id FROM sites s
+        LEFT JOIN systems sy ON s.system_id = sy.id
+        WHERE s.id=?
+    """, (site_id,)).fetchone()
     return row["tag_set_id"] if row else None
 
 
@@ -843,10 +1028,10 @@ def _ensure_talkgroup_placeholder(conn, tag_set_id, tgid):
 
 
 def poll_history_once(conn):
-    system_id = _active_system_id(conn)
-    if system_id is None:
-        return  # no active system -- nothing is receiving RF, nothing to log
-    tag_set_id = _active_tag_set_id(conn, system_id)
+    site_id = _active_site_id(conn)
+    if site_id is None:
+        return  # no active site -- nothing is receiving RF, nothing to log
+    tag_set_id = _active_tag_set_id(conn, site_id)
 
     try:
         status, body = op25_send_command("update", 0, 0)
@@ -864,9 +1049,9 @@ def poll_history_once(conn):
     call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
 
     if trunk_update:
-        # Keys are positional indices (0, 1, 2...) per configured system, not
+        # Keys are positional indices (0, 1, 2...) per configured site, not
         # NAC/sysid -- see tk_p25.py's rx_ctl.to_json(). Only the currently
-        # active system will ever have non-empty wuid_data (inactive systems
+        # active site will ever have non-empty wuid_data (inactive sites
         # never process real RF), so which index is which doesn't matter here.
         for key, val in trunk_update.items():
             if key in ("json_type", "nac") or not isinstance(val, dict):
@@ -878,7 +1063,7 @@ def poll_history_once(conn):
                 conn.execute(
                     """INSERT OR IGNORE INTO subscriber_registrations
                        (trunked_system_id, time, tgid, tgid_tag, source_rid, tag) VALUES (?, ?, ?, ?, ?, ?)""",
-                    (system_id, _epoch_to_iso(entry["time"]), entry.get("aff_ga"), entry.get("aff_ga_tag"),
+                    (site_id, _epoch_to_iso(entry["time"]), entry.get("aff_ga"), entry.get("aff_ga_tag"),
                      entry["srcaddr"], entry.get("tag")),
                 )
 
@@ -895,7 +1080,7 @@ def poll_history_once(conn):
                          uplink=excluded.uplink, rfid=excluded.rfid, stid=excluded.stid, lra=excluded.lra,
                          freq_table=excluded.freq_table, conventional=excluded.conventional,
                          valid=excluded.valid, active=excluded.active, last_seen=excluded.last_seen""",
-                    (system_id, int(freq), entry.get("uplink"), entry.get("rfid"), entry.get("stid"), entry.get("lra"),
+                    (site_id, int(freq), entry.get("uplink"), entry.get("rfid"), entry.get("stid"), entry.get("lra"),
                      entry.get("table"), entry.get("conventional"), entry.get("valid"), entry.get("active"),
                      _epoch_to_iso(time.time())),
                 )
@@ -909,7 +1094,7 @@ def poll_history_once(conn):
                 """INSERT OR IGNORE INTO call_history
                    (trunked_system_id, time, freq, slot, prio, tgid, tgtag, rid, rtag)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (system_id, _epoch_to_iso(entry["time"]), entry.get("freq"), entry.get("slot"), entry.get("prio"),
+                (site_id, _epoch_to_iso(entry["time"]), entry.get("freq"), entry.get("slot"), entry.get("prio"),
                  entry.get("tgid"), entry.get("tgtag"), entry.get("rid"), entry.get("rtag")),
             )
 
@@ -993,9 +1178,9 @@ def list_subscriber_registrations(conn, qs):
     window_min = float(qs.get("minutes", ["15"])[0])
     limit = int(qs.get("limit", ["500"])[0])
     q = """
-    SELECT sr.*, ts.sysname
+    SELECT sr.*, s.sysname
     FROM subscriber_registrations sr
-    JOIN trunked_systems ts ON sr.trunked_system_id = ts.id
+    JOIN sites s ON sr.trunked_system_id = s.id
     WHERE sr.time > datetime('now', ?)
     ORDER BY sr.time DESC
     LIMIT ?
@@ -1008,9 +1193,9 @@ def list_call_history(conn, qs):
     window_min = float(qs.get("minutes", ["15"])[0])
     limit = int(qs.get("limit", ["500"])[0])
     q = """
-    SELECT ch.*, ts.sysname
+    SELECT ch.*, s.sysname
     FROM call_history ch
-    JOIN trunked_systems ts ON ch.trunked_system_id = ts.id
+    JOIN sites s ON ch.trunked_system_id = s.id
     WHERE ch.time > datetime('now', ?)
     ORDER BY ch.time DESC
     LIMIT ?
@@ -1022,13 +1207,13 @@ def list_call_history(conn, qs):
 def list_neighbor_sites(conn, qs):
     # Latest-known-state table, not history -- no time-window filter, unlike
     # list_subscriber_registrations()/list_call_history() above.
-    system_id = qs.get("system_id", [None])[0]
-    if system_id is None:
-        system_id = _active_system_id(conn)
-    if system_id is None:
+    site_id = qs.get("site_id", [None])[0]
+    if site_id is None:
+        site_id = _active_site_id(conn)
+    if site_id is None:
         return []
     rows = conn.execute(
-        "SELECT * FROM neighbor_sites WHERE trunked_system_id = ? ORDER BY freq", (int(system_id),)
+        "SELECT * FROM neighbor_sites WHERE trunked_system_id = ? ORDER BY freq", (int(site_id),)
     ).fetchall()
     return rows_to_list(rows)
 

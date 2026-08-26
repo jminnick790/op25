@@ -18,17 +18,18 @@ antenna -> RTL-SDR -> Pi Zero 2W (rtl_tcp) -> LAN -> [op25] -> browser (New UI, 
   3.10 / gr-osmosdr and tunes a *remote* SDR over the network using
   gr-osmosdr's `rtl_tcp=<host>:<port>` device arg -- no USB passthrough, no
   privileged container. It reads its entire config (SDR device, physical
-  channel, every trunked system definition, talkgroup names, white/black
+  channel, every site's definition, talkgroup names, white/black
   lists) from a SQLite database rather than the JSON/TSV files earlier
   versions of this MVP used. Decoded call audio goes out over OP25's
   built-in raw-PCM WebSocket server, which the New UI's audio player
   connects to directly -- no transcoding/Icecast hop.
 - **`config-api`** container is a small sidecar (stdlib-only Python, no
-  new dependencies) exposing REST CRUD + a browser admin UI for systems,
-  talkgroups, categories (RadioReference-style groupings), devices/
+  new dependencies) exposing REST CRUD + a browser admin UI for systems
+  (logical networks like "NC VIPER"), sites (individual physical radio
+  sites), talkgroups, categories (RadioReference-style groupings), devices/
   channels, and white/blacklists, all backed by the same SQLite file
   `op25` reads. Its "Set Active" action (and DB import) restart `op25`
-  after a system/device/channel change (anything structural always needs
+  after a site/device/channel change (anything structural always needs
   a restart -- talkgroup/list edits can apply live via "Apply", no
   restart, since `op25` re-queries the DB in place for those). That
   restart goes through supervisord's control interface inside the `op25`
@@ -82,8 +83,8 @@ cp .env.example .env
 
 `.env` only needs `LOG_VERBOSITY` and the host ports
 (`OP25_HTTP_HOST_PORT`, `OP25_WS_AUDIO_HOST_PORT`, `CONFIG_API_HOST_PORT`)
--- the SDR device (host/port/gain/ppm), trunked system definitions,
-talkgroups, and which system is active all live in the SQLite DB now, set
+-- the SDR device (host/port/gain/ppm), system/site definitions,
+talkgroups, and which site is active all live in the SQLite DB now, set
 through config-api's UI rather than env vars or bind-mounted files.
 
 ## 3. Get a config DB in place
@@ -93,10 +94,10 @@ through config-api's UI rather than env vars or bind-mounted files.
 
 - **First-time setup**: run `docker/config/migrate_json_to_sqlite.py`
   against a `multi_rx.json`-style config to seed a fresh DB (see the
-  script's docstring), or just add your first system/talkgroups by hand
+  script's docstring), or just add your first site/talkgroups by hand
   through config-api's UI once it's up (an empty DB is fine to start
   `docker compose up` against -- `op25` will just have nothing to decode
-  until a system + channel exist).
+  until a site + channel exist).
 - **Moving from another deployment**: use that deployment's config-api
   "Export Config" button to download its `op25.db`, then:
   ```
@@ -119,8 +120,8 @@ expected, not a bug.
 
 ## 5. Use it
 
-- **Admin UI** (manage systems, talkgroups, groups, white/blacklists,
-  reorder/search/sort, export config, switch which system is active):
+- **Admin UI** (manage systems, sites, talkgroups, groups, white/blacklists,
+  reorder/search/sort, export config, switch which site is active):
   `http://<docker-host>:8091` (`CONFIG_API_HOST_PORT`).
 - **New UI** (live channel status, call log, low-latency WebSocket audio
   player): `http://<docker-host>:8080` (`OP25_HTTP_HOST_PORT`).
@@ -138,7 +139,7 @@ for that.
   and reachable from the Docker host (`nc -zv <pi-ip> <port>`); the Docker
   host and Pi need to be on the same LAN (or otherwise routed).
 - **Edited a talkgroup/list in config-api but don't see it change**:
-  click "Apply" on that system's row (only does something if that system
+  click "Apply" on that site's row (only does something if that site
   is the currently *active* one), then wait for that talkgroup to
   transmit again -- the New UI's tag display is a client-side cache
   seeded from live call events, not a static list, so it won't show a
@@ -151,6 +152,6 @@ for that.
 ## Out of scope for now
 
 Tailscale setup itself, recording, MQTT/Home Assistant integration, and
-true no-restart hot-swap between active systems (switching still restarts
+true no-restart hot-swap between active sites (switching still restarts
 `op25` -- see `docker/config/schema.sql`'s comments) are deliberately left
 out.

@@ -62,24 +62,41 @@ CREATE TABLE access_list_entries (
 );
 CREATE INDEX idx_access_list_entries_list ON access_list_entries(access_list_id);
 
--- trunking.chans[] equivalent.
-CREATE TABLE trunked_systems (
+-- A logical network (e.g. "NC VIPER", "Charlotte UASI") -- the things that
+-- apply across every site of that network, not to one tower.
+CREATE TABLE systems (
+    id           INTEGER PRIMARY KEY,
+    name         TEXT NOT NULL UNIQUE,
+    tag_set_id   INTEGER REFERENCES tag_sets(id) ON DELETE SET NULL,
+    whitelist_id INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
+    blacklist_id INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
+    notes        TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- trunking.chans[] equivalent -- one physical radio site. Several sites can
+-- belong to the same logical system (system_id) -- e.g. VIPER's Anderson
+-- Mountain/Huntersville/Lincolnton are three sites of one system, which is
+-- why NAC isn't unique across them. sysname is kept as-is (not renamed to
+-- "site_name") since op25's own New UI (main.js) consumes it as a bare,
+-- unaliased JSON column from /api/subscriber_registrations and
+-- /api/call_history.
+CREATE TABLE sites (
     id                    INTEGER PRIMARY KEY,
+    system_id             INTEGER REFERENCES systems(id) ON DELETE SET NULL,
     sysname               TEXT NOT NULL UNIQUE,
     nac                   TEXT NOT NULL DEFAULT '0x0',
     control_channel_list  TEXT NOT NULL,
     tdma_cc               INTEGER NOT NULL DEFAULT 0 CHECK (tdma_cc IN (0,1)),
     crypt_behavior        INTEGER NOT NULL DEFAULT 1,
-    tag_set_id            INTEGER REFERENCES tag_sets(id) ON DELETE SET NULL,
-    whitelist_id          INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
-    blacklist_id          INTEGER REFERENCES access_lists(id) ON DELETE SET NULL,
     notes                 TEXT,   -- carries the existing "#note" field content verbatim
     sort_order            INTEGER NOT NULL DEFAULT 0,   -- user-defined display order (config-api drag-to-reorder)
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
-CREATE INDEX idx_trunked_systems_tag_set ON trunked_systems(tag_set_id);
-CREATE INDEX idx_trunked_systems_sort_order ON trunked_systems(sort_order);
+CREATE INDEX idx_sites_system ON sites(system_id);
+CREATE INDEX idx_sites_sort_order ON sites(sort_order);
 
 CREATE TABLE devices (
     id             INTEGER PRIMARY KEY,
@@ -97,7 +114,7 @@ CREATE TABLE channels (
     id                   INTEGER PRIMARY KEY,
     name                 TEXT NOT NULL,
     device_id            INTEGER NOT NULL REFERENCES devices(id) ON DELETE RESTRICT,
-    trunking_system_id   INTEGER REFERENCES trunked_systems(id) ON DELETE SET NULL,  -- the field "Set Active" mutates
+    trunking_system_id   INTEGER REFERENCES sites(id) ON DELETE SET NULL,  -- the field "Set Active" mutates
     demod_type           TEXT NOT NULL DEFAULT 'cqpsk',
     destination          TEXT NOT NULL,
     meta_stream_name     TEXT NOT NULL DEFAULT '',
@@ -121,7 +138,7 @@ CREATE INDEX idx_channels_trunking_system ON channels(trunking_system_id);
 -- Lincolnton all share NAC 0x1f0).
 CREATE TABLE subscriber_registrations (
     id                  INTEGER PRIMARY KEY,
-    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+    trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
     time                TEXT NOT NULL,
     tgid                INTEGER,
     tgid_tag            TEXT,   -- op25's own resolved talkgroup tag at registration time (aff_ga_tag) --
@@ -137,7 +154,7 @@ CREATE INDEX idx_subreg_rid ON subscriber_registrations(trunked_system_id, sourc
 
 CREATE TABLE call_history (
     id                  INTEGER PRIMARY KEY,
-    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+    trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
     time                TEXT NOT NULL,
     freq                INTEGER,
     slot                INTEGER,
@@ -159,12 +176,13 @@ CREATE INDEX idx_callhist_rid ON call_history(trunked_system_id, rid, time);
 -- p25_system.adjacent_data (tk_p25.py), itself decoded from P25's
 -- "adjacent status" TSBKs (opcodes 0x3c/0xfc/0xfe). Foundation for
 -- eventual site-roaming: resolving a neighbor to one of this DB's own
--- trunked_systems rows is deliberately not done here (see roaming plan).
+-- sites rows (and thus which system it belongs to) is deliberately not
+-- done here (see roaming plan).
 CREATE TABLE neighbor_sites (
     id                  INTEGER PRIMARY KEY,
-    trunked_system_id   INTEGER NOT NULL REFERENCES trunked_systems(id) ON DELETE CASCADE,
+    trunked_system_id   INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
     freq                INTEGER NOT NULL,   -- downlink/control channel Hz (channel_id_to_frequency() output --
-                                             -- NOTE: trunked_systems.control_channel_list stores decimal-MHz
+                                             -- NOTE: sites.control_channel_list stores decimal-MHz
                                              -- text, not Hz; unit conversion is the roaming phase's job)
     uplink              INTEGER,            -- Hz, subscriber TX freq (freq + repeater offset)
     rfid                INTEGER,
@@ -179,4 +197,4 @@ CREATE TABLE neighbor_sites (
 );
 CREATE INDEX idx_neighbor_sites_system ON neighbor_sites(trunked_system_id);
 
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;

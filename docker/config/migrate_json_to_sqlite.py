@@ -159,35 +159,65 @@ def main():
         )
         counts[f"access_list_entries[{name}]"] = len(tgids)
 
-    # --- trunked_systems ---
+    # --- systems + sites ---
+    # A "system" groups the chans[] entries that share the same
+    # (tag_set_id, whitelist_id, blacklist_id) triple -- e.g. every NC VIPER
+    # chan shares one tag_set, every Charlotte UASI chan shares another.
+    # No whitelist source file exists today (ACCESS_LIST_FILES only maps a
+    # blacklist), so whitelist_id is always None here -- an accurate
+    # reflection of there being no whitelist data to migrate, not an
+    # omission.
+    chans = list(cfg.get("trunking", {}).get("chans", []))
+    group_to_system_id = {}
+    for chan in chans:
+        tag_set_id = tag_set_ids.get(chan.get("tgid_tags_file", ""))
+        whitelist_id = None
+        blacklist_id = access_list_ids.get(chan.get("blacklist", ""))
+        key = (tag_set_id, whitelist_id, blacklist_id)
+        if key in group_to_system_id:
+            continue
+        sysname = chan["sysname"]
+        base_name = sysname.split(" - ")[0].strip() if " - " in sysname else sysname
+        name = base_name
+        n = 1
+        while conn.execute("SELECT 1 FROM systems WHERE name=?", (name,)).fetchone():
+            n += 1
+            name = f"{base_name} ({n})"
+        cur = conn.execute(
+            "INSERT INTO systems (name, tag_set_id, whitelist_id, blacklist_id) VALUES (?, ?, ?, ?)",
+            (name, tag_set_id, whitelist_id, blacklist_id),
+        )
+        group_to_system_id[key] = cur.lastrowid
+    counts["systems"] = len(group_to_system_id)
+
     sysname_to_id = {}
     note_count = 0
-    for sort_order, chan in enumerate(cfg.get("trunking", {}).get("chans", [])):
+    for sort_order, chan in enumerate(chans):
         tag_set_id = tag_set_ids.get(chan.get("tgid_tags_file", ""))
         blacklist_id = access_list_ids.get(chan.get("blacklist", ""))
+        system_id = group_to_system_id[(tag_set_id, None, blacklist_id)]
         notes = chan.get("#note")
         if notes:
             note_count += 1
         cur = conn.execute(
-            """INSERT INTO trunked_systems
+            """INSERT INTO sites
                (sysname, nac, control_channel_list, tdma_cc, crypt_behavior,
-                tag_set_id, blacklist_id, notes, sort_order)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                system_id, notes, sort_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 chan["sysname"],
                 chan.get("nac", "0x0"),
                 chan.get("control_channel_list", ""),
                 1 if chan.get("tdma_cc") else 0,
                 chan.get("crypt_behavior", 1),
-                tag_set_id,
-                blacklist_id,
+                system_id,
                 notes,
                 sort_order,
             ),
         )
         sysname_to_id[chan["sysname"]] = cur.lastrowid
-    counts["trunked_systems"] = len(sysname_to_id)
-    counts["trunked_systems_with_notes"] = note_count
+    counts["sites"] = len(sysname_to_id)
+    counts["sites_with_notes"] = note_count
 
     # --- devices ---
     device_name_to_id = {}

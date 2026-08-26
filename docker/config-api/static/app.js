@@ -28,21 +28,22 @@ async function api(method, path, body) {
 
 // Internal tab id -> URL path (kept distinct so the "lists" tab id can read
 // nicer in the address bar without renaming it everywhere in this file).
-const TAB_PATHS = { systems: "/systems", talkgroups: "/talkgroups", lists: "/access-lists", devices: "/devices" };
+const TAB_PATHS = { systems: "/systems", sites: "/sites", talkgroups: "/talkgroups", lists: "/access-lists", devices: "/devices" };
 const PATH_TABS = Object.fromEntries(Object.entries(TAB_PATHS).map(([tab, path]) => [path, tab]));
 
 function tabFromPath(pathname) {
-    return PATH_TABS[pathname] || "systems";
+    return PATH_TABS[pathname] || "sites";
 }
 
 function switchTab(tab, pushState = true) {
-    if (!TAB_PATHS[tab]) tab = "systems";
+    if (!TAB_PATHS[tab]) tab = "sites";
     document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
     document.querySelectorAll("section").forEach(s => s.classList.toggle("active", s.id === `tab-${tab}`));
     if (pushState && location.pathname !== TAB_PATHS[tab]) {
         history.pushState({ tab }, "", TAB_PATHS[tab]);
     }
     if (tab === "systems") loadSystems();
+    if (tab === "sites") loadSites();
     if (tab === "talkgroups") loadTalkgroups();
     if (tab === "lists") loadListEntries();
     if (tab === "devices") loadDevices();
@@ -121,13 +122,13 @@ function initSortableHeaders(tableId) {
     });
 }
 
-// --------------------------------------------------------------- systems --
+// ----------------------------------------------------------------- sites --
 
-async function loadSystems() {
-    const [systems, lookups] = await Promise.all([api("GET", "/api/systems"), loadLookups()]);
-    const tbody = document.querySelector("#systems-table tbody");
+async function loadSites() {
+    const [sites, lookups] = await Promise.all([api("GET", "/api/sites"), loadLookups()]);
+    const tbody = document.querySelector("#sites-table tbody");
     tbody.innerHTML = "";
-    for (const s of systems) {
+    for (const s of sites) {
         const tr = document.createElement("tr");
         tr.draggable = true;
         tr.dataset.id = s.id;
@@ -136,23 +137,22 @@ async function loadSystems() {
           <td class="truncate" title="${esc(s.sysname)}">${esc(s.sysname)}</td>
           <td class="mono">${esc(s.nac)}</td>
           <td class="truncate mono" title="${esc(s.control_channel_list)}">${esc(s.control_channel_list)}</td>
-          <td class="truncate" title="${esc(s.tag_set_name)}">${s.tag_set_name || "-"}</td>
-          <td class="truncate" title="${esc(s.blacklist_name)}">${s.blacklist_name || "-"}</td>
+          <td class="truncate" title="${esc(s.system_name)}">${s.system_name || "-"}</td>
           <td><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
           <td class="truncate" title="${esc(s.notes)}">${esc(s.notes) || ""}</td>
           <td>
-            <button class="action" ${s.active ? "" : "disabled title=\"only the active system's reload can be applied live\""} onclick="applyReload(${s.id})">Apply</button>
-            <button class="action" onclick="activateSystem(${s.id})">Set Active</button>
-            <button class="action danger" onclick="deleteSystem(${s.id})">Delete</button>
+            <button class="action" ${s.active ? "" : "disabled title=\"only the active site's reload can be applied live\""} onclick="applyReload(${s.id})">Apply</button>
+            <button class="action" onclick="activateSite(${s.id})">Set Active</button>
+            <button class="action danger" onclick="deleteSite(${s.id})">Delete</button>
           </td>`;
         tbody.appendChild(tr);
     }
-    initSystemsDragReorder(tbody);
+    initSitesDragReorder(tbody);
 }
 
 let dragSrcRow = null;
 
-function initSystemsDragReorder(tbody) {
+function initSitesDragReorder(tbody) {
     tbody.querySelectorAll("tr").forEach(tr => {
         tr.addEventListener("dragstart", () => { dragSrcRow = tr; });
         tr.addEventListener("dragover", (e) => {
@@ -169,23 +169,31 @@ function initSystemsDragReorder(tbody) {
             const dstIdx = rows.indexOf(tr);
             if (srcIdx < dstIdx) tr.after(dragSrcRow);
             else tr.before(dragSrcRow);
-            persistSystemOrder(tbody);
+            persistSiteOrder(tbody);
         });
     });
 }
 
-async function persistSystemOrder(tbody) {
+async function persistSiteOrder(tbody) {
     const order = Array.from(tbody.querySelectorAll("tr")).map(tr => parseInt(tr.dataset.id));
-    try { await api("POST", "/api/systems/reorder", { order }); }
+    try { await api("POST", "/api/sites/reorder", { order }); }
     catch (e) { toast(e.message, true); }
 }
 
 async function loadLookups() {
-    [tagSets, accessLists] = await Promise.all([api("GET", "/api/tag_sets"), api("GET", "/api/access_lists")]);
-    const tagsetSel = document.getElementById("sys-tagset");
-    tagsetSel.innerHTML = '<option value="">(none)</option>' + tagSets.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
-    const blSel = document.getElementById("sys-blacklist");
-    blSel.innerHTML = '<option value="">(none)</option>' + accessLists.filter(l => l.type === "blacklist").map(l => `<option value="${l.id}">${l.name}</option>`).join("");
+    let systems;
+    [tagSets, accessLists, systems] = await Promise.all([
+        api("GET", "/api/tag_sets"), api("GET", "/api/access_lists"), api("GET", "/api/systems"),
+    ]);
+    const systemTagsetSel = document.getElementById("system-tagset");
+    systemTagsetSel.innerHTML = '<option value="">(none)</option>' + tagSets.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
+    const systemWlSel = document.getElementById("system-whitelist");
+    systemWlSel.innerHTML = '<option value="">(none)</option>' + accessLists.filter(l => l.type === "whitelist").map(l => `<option value="${l.id}">${l.name}</option>`).join("");
+    const systemBlSel = document.getElementById("system-blacklist");
+    systemBlSel.innerHTML = '<option value="">(none)</option>' + accessLists.filter(l => l.type === "blacklist").map(l => `<option value="${l.id}">${l.name}</option>`).join("");
+
+    const siteSystemSel = document.getElementById("site-system");
+    siteSystemSel.innerHTML = '<option value="">(none)</option>' + systems.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
 
     const tgPicker = document.getElementById("tgset-picker");
     tgPicker.innerHTML = tagSets.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
@@ -193,15 +201,64 @@ async function loadLookups() {
     listPicker.innerHTML = accessLists.map(l => `<option value="${l.id}">${l.name} (${l.type})</option>`).join("");
 }
 
+async function createSite() {
+    try {
+        await api("POST", "/api/sites", {
+            sysname: document.getElementById("site-sysname").value,
+            nac: document.getElementById("site-nac").value,
+            control_channel_list: document.getElementById("site-ccl").value,
+            system_id: document.getElementById("site-system").value || null,
+            notes: document.getElementById("site-notes").value || null,
+        });
+        toast("Site added");
+        loadSites();
+    } catch (e) { toast(e.message, true); }
+}
+
+async function deleteSite(id) {
+    if (!confirm("Delete this site?")) return;
+    try { await api("DELETE", `/api/sites/${id}`); toast("Deleted"); loadSites(); }
+    catch (e) { toast(e.message, true); }
+}
+
+async function applyReload(id) {
+    try { const r = await api("POST", `/api/sites/${id}/apply_reload`); toast(r.status); }
+    catch (e) { toast(e.message, true); }
+}
+
+async function activateSite(id) {
+    if (!confirm("Switch the active receiver to this site and restart op25?")) return;
+    try { const r = await api("POST", `/api/sites/${id}/activate`); toast(r.status); loadSites(); }
+    catch (e) { toast(e.message, true); }
+}
+
+// --------------------------------------------------------------- systems --
+
+async function loadSystems() {
+    const systems = await api("GET", "/api/systems");
+    const tbody = document.querySelector("#systems-table tbody");
+    tbody.innerHTML = "";
+    for (const sy of systems) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td class="truncate" title="${esc(sy.name)}">${esc(sy.name)}</td>
+          <td class="truncate" title="${esc(sy.tag_set_name)}">${sy.tag_set_name || "-"}</td>
+          <td class="truncate" title="${esc(sy.whitelist_name)}">${sy.whitelist_name || "-"}</td>
+          <td class="truncate" title="${esc(sy.blacklist_name)}">${sy.blacklist_name || "-"}</td>
+          <td class="truncate" title="${esc(sy.notes)}">${esc(sy.notes) || ""}</td>
+          <td><button class="action danger" onclick="deleteSystem(${sy.id})">Delete</button></td>`;
+        tbody.appendChild(tr);
+    }
+}
+
 async function createSystem() {
     try {
         await api("POST", "/api/systems", {
-            sysname: document.getElementById("sys-sysname").value,
-            nac: document.getElementById("sys-nac").value,
-            control_channel_list: document.getElementById("sys-ccl").value,
-            tag_set_id: document.getElementById("sys-tagset").value || null,
-            blacklist_id: document.getElementById("sys-blacklist").value || null,
-            notes: document.getElementById("sys-notes").value || null,
+            name: document.getElementById("system-name").value,
+            tag_set_id: document.getElementById("system-tagset").value || null,
+            whitelist_id: document.getElementById("system-whitelist").value || null,
+            blacklist_id: document.getElementById("system-blacklist").value || null,
+            notes: document.getElementById("system-notes").value || null,
         });
         toast("System added");
         loadSystems();
@@ -209,19 +266,8 @@ async function createSystem() {
 }
 
 async function deleteSystem(id) {
-    if (!confirm("Delete this system?")) return;
+    if (!confirm("Delete this system? Any sites using it will become unassigned, not deleted.")) return;
     try { await api("DELETE", `/api/systems/${id}`); toast("Deleted"); loadSystems(); }
-    catch (e) { toast(e.message, true); }
-}
-
-async function applyReload(id) {
-    try { const r = await api("POST", `/api/systems/${id}/apply_reload`); toast(r.status); }
-    catch (e) { toast(e.message, true); }
-}
-
-async function activateSystem(id) {
-    if (!confirm("Switch the active receiver to this system and restart op25?")) return;
-    try { const r = await api("POST", `/api/systems/${id}/activate`); toast(r.status); loadSystems(); }
     catch (e) { toast(e.message, true); }
 }
 
@@ -419,8 +465,8 @@ async function createAccessList() {
 // -------------------------------------------------------------- devices --
 
 async function loadDevices() {
-    const [devices, channels, systems] = await Promise.all([
-        api("GET", "/api/devices"), api("GET", "/api/channels"), api("GET", "/api/systems"),
+    const [devices, channels, sites] = await Promise.all([
+        api("GET", "/api/devices"), api("GET", "/api/channels"), api("GET", "/api/sites"),
     ]);
 
     const devTbody = document.querySelector("#devices-table tbody");
@@ -440,12 +486,12 @@ async function loadDevices() {
     }
 
     document.getElementById("chan-device").innerHTML = devices.map(d => `<option value="${d.id}">${esc(d.name)}</option>`).join("");
-    document.getElementById("chan-system").innerHTML = `<option value="">(none)</option>` + systems.map(s => `<option value="${s.id}">${esc(s.sysname)}</option>`).join("");
+    document.getElementById("chan-site").innerHTML = `<option value="">(none)</option>` + sites.map(s => `<option value="${s.id}">${esc(s.sysname)}</option>`).join("");
 
     const deviceOptions = (selectedId) => devices.map(d =>
         `<option value="${d.id}" ${d.id === selectedId ? "selected" : ""}>${esc(d.name)}</option>`
     ).join("");
-    const systemOptions = (selectedId) => `<option value="" ${selectedId ? "" : "selected"}>(none)</option>` + systems.map(s =>
+    const siteOptions = (selectedId) => `<option value="" ${selectedId ? "" : "selected"}>(none)</option>` + sites.map(s =>
         `<option value="${s.id}" ${s.id === selectedId ? "selected" : ""}>${esc(s.sysname)}</option>`
     ).join("");
 
@@ -456,7 +502,7 @@ async function loadDevices() {
         tr.innerHTML = `
           <td><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
           <td><select onchange="updateChannel(${c.id}, {device_id: parseInt(this.value)})">${deviceOptions(c.device_id)}</select></td>
-          <td><select onchange="updateChannel(${c.id}, {trunking_system_id: this.value ? parseInt(this.value) : null})">${systemOptions(c.trunking_system_id)}</select></td>
+          <td><select onchange="updateChannel(${c.id}, {trunking_system_id: this.value ? parseInt(this.value) : null})">${siteOptions(c.trunking_system_id)}</select></td>
           <td><input value="${esc(c.demod_type)}" onchange="updateChannel(${c.id}, {demod_type: this.value})" style="width:5em"></td>
           <td><input value="${esc(c.destination)}" onchange="updateChannel(${c.id}, {destination: this.value})" style="width:95%"></td>
           <td><input value="${esc(c.enable_analog)}" onchange="updateChannel(${c.id}, {enable_analog: this.value})" style="width:4em"></td>
@@ -497,7 +543,7 @@ async function createChannel() {
         await api("POST", "/api/channels", {
             name: document.getElementById("chan-name").value,
             device_id: parseInt(deviceId),
-            trunking_system_id: document.getElementById("chan-system").value ? parseInt(document.getElementById("chan-system").value) : null,
+            trunking_system_id: document.getElementById("chan-site").value ? parseInt(document.getElementById("chan-site").value) : null,
             destination: document.getElementById("chan-destination").value,
         });
         toast("Channel added -- restart op25 to use it");

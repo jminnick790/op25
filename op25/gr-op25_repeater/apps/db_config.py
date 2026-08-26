@@ -41,7 +41,10 @@ def build_config_from_db(db_path):
 
         chans = []
         sys_id_to_sysname = {}
-        for row in conn.execute("SELECT * FROM trunked_systems"):
+        for row in conn.execute("""
+            SELECT s.*, sy.tag_set_id, sy.whitelist_id, sy.blacklist_id
+            FROM sites s LEFT JOIN systems sy ON s.system_id = sy.id
+        """):
             sys_id_to_sysname[row["id"]] = row["sysname"]
             chans.append({
                 "sysname": row["sysname"],
