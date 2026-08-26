@@ -222,13 +222,26 @@ def ensure_schema():
                     crypt_behavior        INTEGER NOT NULL DEFAULT 1,
                     notes                 TEXT,
                     sort_order            INTEGER NOT NULL DEFAULT 0,
+                    rfid                  INTEGER,
+                    stid                  INTEGER,
                     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
                     updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_system ON sites(system_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sites_sort_order ON sites(sort_order)")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_system_rfid_stid ON sites(system_id, rfid, stid)")
             changed.append("created sites table")
+
+        # sites.rfid/stid -- P25's own site identifier (RFSS Status
+        # Broadcast), self-populated by history_poller() once a site is
+        # activated and its own broadcast is observed. Roaming's neighbor
+        # matcher matches on this exact pair scoped to system_id.
+        if _table_exists(conn, "sites") and not _column_exists(conn, "sites", "rfid"):
+            conn.execute("ALTER TABLE sites ADD COLUMN rfid INTEGER")
+            conn.execute("ALTER TABLE sites ADD COLUMN stid INTEGER")
+            conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sites_system_rfid_stid ON sites(system_id, rfid, stid)")
+            changed.append("added sites.rfid/stid")
 
         # subscriber_registrations / call_history
         if not _table_exists(conn, "subscriber_registrations"):
@@ -367,7 +380,7 @@ def create_site(conn, body):
 def update_site(conn, sid, body):
     get_site(conn, sid)  # 404 if missing
     fields = ["sysname", "nac", "control_channel_list", "tdma_cc", "crypt_behavior",
-              "system_id", "notes"]
+              "system_id", "notes", "rfid", "stid"]
     sets, vals = [], []
     for f in fields:
         if f in body:
@@ -1053,6 +1066,21 @@ def poll_history_once(conn):
         # NAC/sysid -- see tk_p25.py's rx_ctl.to_json(). Only the currently
         # active site will ever have non-empty wuid_data (inactive sites
         # never process real RF), so which index is which doesn't matter here.
+        #
+        # rfid/stid self-populate the active site's own P25 site identity
+        # (from its RFSS Status Broadcast) the first time it's observed --
+        # matched by sysname (val['system']) rather than position, since
+        # that's an unambiguous per-site field already present in each val.
+        site_row = conn.execute("SELECT sysname, rfid, stid FROM sites WHERE id=?", (site_id,)).fetchone()
+        if site_row:
+            for val in trunk_update.values():
+                if not isinstance(val, dict) or val.get("system") != site_row["sysname"]:
+                    continue
+                rfid, stid = val.get("rfid"), val.get("stid")
+                if rfid and stid and (rfid, stid) != (site_row["rfid"], site_row["stid"]):
+                    conn.execute("UPDATE sites SET rfid=?, stid=? WHERE id=?", (rfid, stid, site_id))
+                break
+
         for key, val in trunk_update.items():
             if key in ("json_type", "nac") or not isinstance(val, dict):
                 continue

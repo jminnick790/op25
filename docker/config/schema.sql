@@ -92,11 +92,21 @@ CREATE TABLE sites (
     crypt_behavior        INTEGER NOT NULL DEFAULT 1,
     notes                 TEXT,   -- carries the existing "#note" field content verbatim
     sort_order            INTEGER NOT NULL DEFAULT 0,   -- user-defined display order (config-api drag-to-reorder)
+    rfid                  INTEGER,   -- P25's own site identifier (RFSS Status Broadcast) -- self-populates
+    stid                  INTEGER,   -- the first time this site is activated and its own broadcast is observed
+                                      -- (see config-api's history_poller); roaming's neighbor-site matcher
+                                      -- (docker/config/schema.sql's neighbor_sites) will match on this exact
+                                      -- pair scoped to system_id, not on frequency comparison
     created_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE INDEX idx_sites_system ON sites(system_id);
 CREATE INDEX idx_sites_sort_order ON sites(sort_order);
+-- NULLs don't conflict in a UNIQUE index (SQLite treats each NULL as
+-- distinct), so sites that haven't self-populated rfid/stid yet coexist
+-- fine -- this only catches two sites of the same system genuinely
+-- claiming the same P25 site identity, which would make matching ambiguous.
+CREATE UNIQUE INDEX idx_sites_system_rfid_stid ON sites(system_id, rfid, stid);
 
 CREATE TABLE devices (
     id             INTEGER PRIMARY KEY,
@@ -197,4 +207,4 @@ CREATE TABLE neighbor_sites (
 );
 CREATE INDEX idx_neighbor_sites_system ON neighbor_sites(trunked_system_id);
 
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
