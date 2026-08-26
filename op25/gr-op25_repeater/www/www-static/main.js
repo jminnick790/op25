@@ -271,6 +271,23 @@ function do_onload() {
     // for why: it would clobber appendCallHistory()'s broader, still-active
     // view (every call the receiver sees on the control channel, tuned or
     // not) with just the narrower tuned-only subset config-api's DB has.
+    sse_state_connect();
+}
+
+// Push-based alternative to the setInterval(do_update, 1000) poll above --
+// deliberately left running alongside it for now rather than replacing it
+// (see the SSE push-layer plan): both deliver the identical response shape,
+// so this is easy to verify side by side with zero regression risk if this
+// path has a bug. GET /events (http_server.py) is a long-lived SSE stream;
+// EventSource reconnects natively on drop, no manual retry needed here.
+function sse_state_connect() {
+    const es = new EventSource("/events");
+    es.onmessage = function(event) {
+        handle_response(JSON.parse(event.data));
+    };
+    es.onerror = function(event) {
+        console.log("SSE state stream error (EventSource will retry automatically):", event);
+    };
 }
 
 // ---------------------------------------------- history from config-api --

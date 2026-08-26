@@ -28,6 +28,7 @@ import traceback
 import threading
 import uuid
 import collections
+import queue
 
 from gnuradio import gr
 from waitress.server import create_server
@@ -41,6 +42,13 @@ my_port = None
 my_uuids = []
 q_mutex = threading.Lock()
 u_mutex = threading.Lock()
+
+# SSE state-push support (GET /events) -- see sse_stream()/sse_broadcaster
+# below. Separate lock from q_mutex/u_mutex: this list is only ever touched
+# by sse_stream() (on connect/disconnect) and sse_broadcaster (on each
+# broadcast tick), never by the existing post_req()/queue_watcher path.
+sse_clients = []
+sse_mutex = threading.Lock()
 
 
 """
@@ -146,7 +154,100 @@ def http_request(environ, start_response):
 
     return [output]
 
+def sse_stream():
+    # WSGI response body for GET /events -- a generator Waitress iterates,
+    # streaming each yielded chunk and holding the connection open, rather
+    # than the fully-materialized [bytes] every other response here returns.
+    # Registers its own queue so sse_broadcaster() can push to it; a 15s
+    # idle timeout sends an SSE comment (": keepalive") instead of new data,
+    # both to keep proxies/browsers from timing the connection out and to
+    # bound how long a dead connection can go before Waitress's next write
+    # attempt fails and this generator gets torn down (GeneratorExit can
+    # only be delivered at a yield, so cleanup is bounded by this loop's
+    # own cadence, not instant).
+    q = queue.Queue()
+    with sse_mutex:
+        sse_clients.append(q)
+    try:
+        while True:
+            try:
+                data = q.get(timeout=15)
+                yield ("data: %s\n\n" % data).encode()
+            except queue.Empty:
+                yield b": keepalive\n\n"
+    finally:
+        with sse_mutex:
+            try:
+                sse_clients.remove(q)
+            except ValueError:
+                pass
+
+def _synth_update_request():
+    # Internal equivalent of post_req() receiving a POST body of
+    # [{"command":"update","arg1":0,"arg2":0}] -- same push-onto-
+    # my_output_q / poll-my_recv_q-by-uuid mechanism, just synthesized by
+    # sse_broadcaster() on a timer instead of triggered by an actual HTTP
+    # request. Reuses the exact same state-computation path on the other
+    # end (multi_rx.py's process_qmsg() 'update' branch) -- nothing about
+    # how the JSON gets built changes, only who asks for it.
+    global my_output_q, my_recv_q, q_mutex, u_mutex
+    post_uuid = str(uuid.uuid4())
+    with u_mutex:
+        my_uuids.append(post_uuid)
+    d = {"command": "update", "arg1": 0, "arg2": 0, "uuid": post_uuid}
+    msg = gr.message().make_from_string(json.dumps(d), -2, d['arg1'], d['arg2'])
+    if not my_output_q.full_p():
+        my_output_q.insert_tail(msg)
+
+    resp_msg = None
+    t_expiry = time.time() + 0.5
+    while resp_msg is None and time.time() < t_expiry:
+        if len(my_recv_q) > 0:
+            with u_mutex:
+                with q_mutex:
+                    m_uuid = my_recv_q[0][0]
+                    if m_uuid == post_uuid:
+                        (m_uuid, msg) = my_recv_q.popleft()
+                        resp_msg = msg
+                    elif m_uuid not in my_uuids:
+                        my_recv_q.popleft()
+                    else:
+                        pass
+        time.sleep(0)
+    with u_mutex:
+        try:
+            my_uuids.remove(post_uuid)
+        except (ValueError):
+            pass
+    return resp_msg
+
+class sse_broadcaster(threading.Thread):
+    def __init__(self, interval=1.0, **kwds):
+        threading.Thread.__init__(self, **kwds)
+        self.setDaemon(1)
+        self.interval = interval
+        self.start()
+
+    def run(self):
+        while True:
+            time.sleep(self.interval)
+            with sse_mutex:
+                have_clients = len(sse_clients) > 0
+            if not have_clients:
+                continue    # nobody listening -- skip the RPC round-trip entirely
+            resp = _synth_update_request()
+            if resp is None:
+                continue    # op25 didn't reply within the timeout this tick -- retry next tick
+            data = json.dumps(resp)
+            with sse_mutex:
+                for q in sse_clients:
+                    q.put(data)
+
 def application(environ, start_response):
+    if environ['REQUEST_METHOD'] == 'GET' and environ['PATH_INFO'] == '/events':
+        start_response('200 OK', [('Content-type', 'text/event-stream'),
+                                   ('Cache-Control', 'no-cache')])
+        return sse_stream()
     failed = False
     try:
         result = http_request(environ, start_response)
@@ -182,6 +283,7 @@ class http_server(object):
 
         my_recv_q = collections.deque(maxlen = 10)
         self.q_watcher = queue_watcher(my_input_q, process_qmsg)
+        self.sse_broadcaster = sse_broadcaster()
 
         try:
             self.server = create_server(application, host=host, port=my_port, threads=6)
