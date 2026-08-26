@@ -5,6 +5,7 @@
 let tagSets = [];
 let accessLists = [];
 let categories = [];
+let systemsList = [];
 
 function toast(msg, isError) {
     const el = document.getElementById("toast");
@@ -126,6 +127,10 @@ function initSortableHeaders(tableId) {
 
 async function loadSites() {
     const [sites, lookups] = await Promise.all([api("GET", "/api/sites"), loadLookups()]);
+    const systemOptions = (selectedId) => `<option value="" ${selectedId ? "" : "selected"}>(none)</option>` + systemsList.map(sy =>
+        `<option value="${sy.id}" ${sy.id === selectedId ? "selected" : ""}>${esc(sy.name)}</option>`
+    ).join("");
+
     const tbody = document.querySelector("#sites-table tbody");
     tbody.innerHTML = "";
     for (const s of sites) {
@@ -134,12 +139,12 @@ async function loadSites() {
         tr.dataset.id = s.id;
         tr.innerHTML = `
           <td class="drag-handle">&#8942;&#8942;</td>
-          <td class="truncate" title="${esc(s.sysname)}">${esc(s.sysname)}</td>
-          <td class="mono">${esc(s.nac)}</td>
-          <td class="truncate mono" title="${esc(s.control_channel_list)}">${esc(s.control_channel_list)}</td>
-          <td class="truncate" title="${esc(s.system_name)}">${s.system_name || "-"}</td>
+          <td><input value="${esc(s.sysname)}" onchange="updateSite(${s.id}, {sysname: this.value})" style="width:95%"></td>
+          <td><input value="${esc(s.nac)}" onchange="updateSite(${s.id}, {nac: this.value})" style="width:5em"></td>
+          <td><input value="${esc(s.control_channel_list)}" onchange="updateSite(${s.id}, {control_channel_list: this.value})" style="width:95%"></td>
+          <td><select onchange="updateSite(${s.id}, {system_id: this.value ? parseInt(this.value) : null})">${systemOptions(s.system_id)}</select></td>
           <td><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
-          <td class="truncate" title="${esc(s.notes)}">${esc(s.notes) || ""}</td>
+          <td><input value="${esc(s.notes) || ""}" onchange="updateSite(${s.id}, {notes: this.value})" style="width:95%"></td>
           <td>
             <button class="action" ${s.active ? "" : "disabled title=\"only the active site's reload can be applied live\""} onclick="applyReload(${s.id})">Apply</button>
             <button class="action" onclick="activateSite(${s.id})">Set Active</button>
@@ -148,6 +153,11 @@ async function loadSites() {
         tbody.appendChild(tr);
     }
     initSitesDragReorder(tbody);
+}
+
+async function updateSite(id, patch) {
+    try { await api("PUT", `/api/sites/${id}`, patch); toast("Saved"); }
+    catch (e) { toast(e.message, true); }
 }
 
 let dragSrcRow = null;
@@ -181,8 +191,7 @@ async function persistSiteOrder(tbody) {
 }
 
 async function loadLookups() {
-    let systems;
-    [tagSets, accessLists, systems] = await Promise.all([
+    [tagSets, accessLists, systemsList] = await Promise.all([
         api("GET", "/api/tag_sets"), api("GET", "/api/access_lists"), api("GET", "/api/systems"),
     ]);
     const systemTagsetSel = document.getElementById("system-tagset");
@@ -193,7 +202,7 @@ async function loadLookups() {
     systemBlSel.innerHTML = '<option value="">(none)</option>' + accessLists.filter(l => l.type === "blacklist").map(l => `<option value="${l.id}">${l.name}</option>`).join("");
 
     const siteSystemSel = document.getElementById("site-system");
-    siteSystemSel.innerHTML = '<option value="">(none)</option>' + systems.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
+    siteSystemSel.innerHTML = '<option value="">(none)</option>' + systemsList.map(s => `<option value="${s.id}">${s.name}</option>`).join("");
 
     const tgPicker = document.getElementById("tgset-picker");
     tgPicker.innerHTML = tagSets.map(t => `<option value="${t.id}">${t.name}</option>`).join("");
@@ -235,20 +244,33 @@ async function activateSite(id) {
 // --------------------------------------------------------------- systems --
 
 async function loadSystems() {
-    const systems = await api("GET", "/api/systems");
+    const [systems, lookups] = await Promise.all([api("GET", "/api/systems"), loadLookups()]);
+    const tagsetOptions = (selectedId) => `<option value="" ${selectedId ? "" : "selected"}>(none)</option>` + tagSets.map(t =>
+        `<option value="${t.id}" ${t.id === selectedId ? "selected" : ""}>${esc(t.name)}</option>`
+    ).join("");
+    const accessListOptions = (type, selectedId) => `<option value="" ${selectedId ? "" : "selected"}>(none)</option>` +
+        accessLists.filter(l => l.type === type).map(l =>
+            `<option value="${l.id}" ${l.id === selectedId ? "selected" : ""}>${esc(l.name)}</option>`
+        ).join("");
+
     const tbody = document.querySelector("#systems-table tbody");
     tbody.innerHTML = "";
     for (const sy of systems) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td class="truncate" title="${esc(sy.name)}">${esc(sy.name)}</td>
-          <td class="truncate" title="${esc(sy.tag_set_name)}">${sy.tag_set_name || "-"}</td>
-          <td class="truncate" title="${esc(sy.whitelist_name)}">${sy.whitelist_name || "-"}</td>
-          <td class="truncate" title="${esc(sy.blacklist_name)}">${sy.blacklist_name || "-"}</td>
-          <td class="truncate" title="${esc(sy.notes)}">${esc(sy.notes) || ""}</td>
+          <td><input value="${esc(sy.name)}" onchange="updateSystem(${sy.id}, {name: this.value})" style="width:95%"></td>
+          <td><select onchange="updateSystem(${sy.id}, {tag_set_id: this.value ? parseInt(this.value) : null})">${tagsetOptions(sy.tag_set_id)}</select></td>
+          <td><select onchange="updateSystem(${sy.id}, {whitelist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("whitelist", sy.whitelist_id)}</select></td>
+          <td><select onchange="updateSystem(${sy.id}, {blacklist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("blacklist", sy.blacklist_id)}</select></td>
+          <td><input value="${esc(sy.notes) || ""}" onchange="updateSystem(${sy.id}, {notes: this.value})" style="width:95%"></td>
           <td><button class="action danger" onclick="deleteSystem(${sy.id})">Delete</button></td>`;
         tbody.appendChild(tr);
     }
+}
+
+async function updateSystem(id, patch) {
+    try { await api("PUT", `/api/systems/${id}`, patch); toast("Saved"); }
+    catch (e) { toast(e.message, true); }
 }
 
 async function createSystem() {
