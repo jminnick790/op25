@@ -1785,7 +1785,9 @@ function send_command(command, arg1 = 0, arg2 = 0) {
     request_count += 1;
     if (send_queue.length >= SEND_QLIMIT) {
         send_qfull += 1;
-        send_queue.unshift();
+        send_queue.shift();   // drop the oldest queued command to cap the queue --
+                               // .unshift() with no args was a no-op, this guard
+                               // never actually trimmed anything
     }
     send_queue.push( {"command": command, "arg1": arg1, "arg2": arg2} );
     send_process();
@@ -2384,10 +2386,21 @@ function applySmartColorToTgidSpan() {
   
 } // end applySmartColorToTgidSpan
 
+// db_config.py's build_config_from_db() (the DB-backed config path) never
+// sets a per-system "site_alias" field, so buildSiteAliases() below always
+// skips every entry and site_alias stays permanently empty -- without this
+// guard, every single getSiteAlias() call (one per neighbor site, for every
+// trunk_update) would re-request get_full_config forever, since the retry
+// condition can never resolve. One attempt is enough: do_onload() already
+// requests get_full_config once at page load, which is the real opportunity
+// for this to populate if a future backend change ever adds real alias data.
+var _siteAliasRequested = false;
+
 function getSiteAlias(sysname, rfss, site) {
     const sysNameUpper = String(sysname).toUpperCase();  // Normalize sysname to uppercase
 
-    if (!site_alias || Object.keys(site_alias).length === 0) {
+    if ((!site_alias || Object.keys(site_alias).length === 0) && !_siteAliasRequested) {
+        _siteAliasRequested = true;
         send_command('get_full_config');
     }
 
