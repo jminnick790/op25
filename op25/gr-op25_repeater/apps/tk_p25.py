@@ -60,12 +60,26 @@ CALL_LOG_MAX_LEN = 200   # Maximum number of call_log entries to retain -- get_c
 # called on every process_qmsg() but only actually does anything this often.
 # ROAM_STALE_SECONDS_DEFAULT is the fallback trigger (control-channel
 # staleness) used when there's no active call to measure voice quality
-# against, or as the only trigger until the C++ voice-BER exposure lands --
-# see systems.roaming_stale_seconds for the per-system override.
+# against -- see systems.roaming_stale_seconds for the per-system override.
+# ROAM_VOICE_BER_THRESHOLD/ROAM_VOICE_DEBOUNCE_COUNT drive the PRIMARY
+# trigger: rx_sync::get_fec_stats_json()'s "voice.ber" field (p25p2_tdma's
+# errs_mp.ER, an existing per-call BER estimate that already gates OP25's
+# own audio muting internally at 0.50 -- see p25p2_tdma.h's get_voice_ber())
+# read once a tick during an active call. Deliberately more sensitive than
+# that 0.50 mute threshold: the whole point of this trigger is reacting to
+# audio audibly degrading BEFORE it gets bad enough to mute or the control
+# channel itself dies, so it needs real margin ahead of both. Debounced
+# over several consecutive checks (mirroring the mute logic's own
+# "29 successive frame repeats" debounce) so one noisy reading doesn't
+# false-trigger a roam. Phase 1 (FDMA) has no equivalent signal yet --
+# voice.ber stays 0 (best case) for a Phase 1 receiver, so this trigger is
+# a structural no-op there and roaming falls back to CC staleness alone.
 ROAM_CHECK_INTERVAL = 1.0
 ROAM_STALE_SECONDS_DEFAULT = 10.0
 ROAM_SCOUT_WINDOW_SECONDS = 3.0
 ROAM_MIN_TSBK_COUNT = 3
+ROAM_VOICE_BER_THRESHOLD = 0.20
+ROAM_VOICE_DEBOUNCE_COUNT = 3
 
 #################
 # Helper functions
@@ -344,8 +358,7 @@ class rx_ctl(object):
 
     def _is_degraded(self, system, curr_time):
         # Primary trigger: sustained bad voice BER during an active call --
-        # not wired up yet (needs the C++ voice-BER exposure); this checks
-        # a flag nothing sets yet, so it's always False until that lands.
+        # see _check_voice_degraded(), which sets this flag once a tick.
         if system.voice_degraded:
             return True
         # Fallback trigger: control-channel staleness. Guarded on
@@ -353,6 +366,40 @@ class rx_ctl(object):
         # (e.g. still starting up) doesn't immediately look "degraded".
         stale_seconds = system.roaming_stale_seconds or ROAM_STALE_SECONDS_DEFAULT
         return system.last_tsbk > 0 and (curr_time - system.last_tsbk) >= stale_seconds
+
+    def _check_voice_degraded(self, curr_time):
+        # Reads rx_sync::get_fec_stats_json()'s "voice.ber" field for the
+        # PRIMARY receiver's current call, once a tick, and debounces it
+        # into system.voice_degraded -- see the ROAM_VOICE_* constants for
+        # the reasoning. Only meaningful during an active call; a call
+        # ending clears both the debounce count and the flag immediately
+        # rather than letting a stale reading linger into the next call.
+        if self.primary_msgq_id is None:
+            return
+        primary_entry = self.receivers.get(self.primary_msgq_id)
+        if primary_entry is None or primary_entry['rx_rcvr'] is None:
+            return
+        primary_rx = primary_entry['rx_rcvr']
+        system = primary_rx.system
+        if primary_rx.current_tgid is None:
+            system.voice_ber_bad_count = 0
+            system.voice_degraded = False
+            return
+        resp = primary_rx.fa_ctrl({'tuner': primary_rx.msgq_id, 'cmd': 'fec_stats'})
+        if not resp:
+            return  # e.g. a conventional/non-trunked receiver -- nothing to read
+        try:
+            ber = json.loads(resp)['data']['voice']['ber']
+        except (ValueError, KeyError, TypeError):
+            return
+        if ber >= ROAM_VOICE_BER_THRESHOLD:
+            system.voice_ber_bad_count += 1
+        else:
+            system.voice_ber_bad_count = 0
+        was_degraded = system.voice_degraded
+        system.voice_degraded = system.voice_ber_bad_count >= ROAM_VOICE_DEBOUNCE_COUNT
+        if system.voice_degraded and not was_degraded and self.debug >= 1:
+            sys.stderr.write("%s [roam] %s voice BER degraded (ber=%.3f, %d consecutive bad readings)\n" % (log_ts.get(), system.sysname, ber, system.voice_ber_bad_count))
 
     def _resolve_candidates(self, home_system):
         # home_system's live adjacent_data (already parsed from on-air
@@ -388,6 +435,8 @@ class rx_ctl(object):
         scout_entry = self.receivers.get(self.scout_msgq_id)
         if scout_entry is None or scout_entry['rx_rcvr'] is None:
             return
+
+        self._check_voice_degraded(curr_time)
 
         if self.scout_current is not None:
             # A scout cycle is already in progress for self.scout_home_system.
@@ -682,12 +731,15 @@ class p25_system(object):
         self.group_system_id = from_dict(config, 'system_id', None)
         self.roaming_enabled = bool(from_dict(config, 'roaming_enabled', False))
         self.roaming_stale_seconds = from_dict(config, 'roaming_stale_seconds', None)
-        # Primary trigger for roaming (sustained bad voice BER during an
-        # active call) -- not wired up yet; set by nothing until the C++
-        # voice-BER exposure lands, at which point something will flip this
-        # true on sustained bad decode quality. rx_ctl._is_degraded() checks
-        # it first, falling back to last_tsbk staleness when it's False.
+        # Primary trigger for roaming: sustained bad voice BER during an
+        # active call, set by rx_ctl._check_voice_degraded() (called from
+        # roam_tick()) reading rx_sync::get_fec_stats_json()'s "voice.ber"
+        # field once a tick. rx_ctl._is_degraded() checks this flag first,
+        # falling back to last_tsbk staleness when it's False.
         self.voice_degraded = False
+        # Consecutive over-threshold voice.ber readings -- see
+        # ROAM_VOICE_DEBOUNCE_COUNT.
+        self.voice_ber_bad_count = 0
         # Snapshot of stats['tsbk_count'] taken when this site's scout
         # observation window begins (rx_ctl's _scout_next()) -- reusing the
         # existing counter rather than adding a second increment site to

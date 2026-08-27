@@ -56,6 +56,14 @@ class p25p2_tdma
         inline void set_nac(int nac) { d_nac = nac; }
         void crypt_behavior(int behavior);
         inline void set_debug(int debug) { d_debug = debug; crypt_algs.set_debug(debug); }
+        // Exponential moving average of Golay-corrected bit errors on the
+        // AMBE header codewords, updated every voice frame in
+        // p25p2_vf::process_vcw() -- already used internally to gate audio
+        // synthesis (see handle_voice_frame()'s "errs_mp.ER <= 0.50" check,
+        // a threshold this project has hand-tuned once via direct listening
+        // feedback). Exposed read-only so it can double as a roaming
+        // trigger -- see rx_sync::get_fec_stats_json().
+        inline double get_voice_ber() const { return errs_mp.ER; }
         bool rx_sym(uint8_t sym);
         int handle_frame(void) ;
     private:

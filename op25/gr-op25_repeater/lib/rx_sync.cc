@@ -162,10 +162,14 @@ void rx_sync::set_debug(int debug) {
 
 // Build the FEC stats JSON envelope. Counters are monotonic since
 // construction; consumers diff between samples to compute rates.
+// schema bumped to 2 for the addition of "voice" -- "control" and "sync"
+// are unchanged and existing callers (none exist yet; this command is
+// currently only reachable via frame_assembler_impl::control() with zero
+// Python call sites) don't need to change.
 std::string rx_sync::get_fec_stats_json() const {
 	nlohmann::json envelope = {
 		{"cmd", "fec_stats"},
-		{"schema", 1},
+		{"schema", 2},
 		{"data", {
 			{"control", {
 				{"tsbk_attempted",  p25fdma.stat_tsbk_attempted()},
@@ -175,6 +179,16 @@ std::string rx_sync::get_fec_stats_json() const {
 			}},
 			{"sync", {
 				{"losses", p25fdma.stat_timeouts()},
+			}},
+			{"voice", {
+				// Phase 2 (TDMA) only -- p25p2_tdma::errs_mp.ER, an
+				// exponential moving average of Golay-corrected bit errors
+				// on the AMBE header, reset to 0 (best case) at the start
+				// of each call (see p25p2_tdma::call_end()) so it reflects
+				// the CURRENT call's quality, not a stale cross-call
+				// average. No Phase 1 (FDMA) equivalent exists yet --
+				// there's no analogous caller-side BER gate on that path.
+				{"ber", p25tdma.get_voice_ber()},
 			}},
 		}},
 	};

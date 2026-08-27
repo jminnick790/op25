@@ -531,9 +531,17 @@ class channel(object):
                 self.chan_idle = True if (params['slotid'] == 4) else False
             elif params['cmd'] == "set_xormask":
                 self.decoder.control(json.dumps({'tuner': self.msgq_id, 'cmd': 'set_xormask', 'xormask': self.xor_cache[self.get_hash(params)]}))
-                return
-        self.decoder.control(json.dumps(params))
+                return None
+        # frame_assembler_impl::control() returns a JSON string for
+        # commands that produce output (e.g. "fec_stats"), empty string
+        # otherwise -- propagated up through fa_control() so callers like
+        # tk_p25.py's roaming coordinator can actually read it. Every
+        # existing caller already discards this (fire-and-forget commands
+        # like set_nac/crypt_behavior/etc.), so returning it now is purely
+        # additive.
+        resp = self.decoder.control(json.dumps(params))
         self.demod.control(not self.chan_idle)
+        return resp
 
     def kill(self):
         for sink in self.sinks:
@@ -832,7 +840,8 @@ class rx_block (gr.top_block):
         tuner = params['tuner']
         chan = self.channels[tuner]
         if chan is not None:
-            chan.control(params)
+            return chan.control(params)
+        return None
 
     def nbfm_control(self, msgq_id, action):
         if (msgq_id >= 0 and msgq_id < len(self.channels)) and self.channels[msgq_id].nbfm is not None:
