@@ -42,7 +42,8 @@ def build_config_from_db(db_path):
         chans = []
         sys_id_to_sysname = {}
         for row in conn.execute("""
-            SELECT s.*, sy.tag_set_id, sy.whitelist_id, sy.blacklist_id
+            SELECT s.*, sy.tag_set_id, sy.whitelist_id, sy.blacklist_id,
+                   sy.roaming_enabled, sy.roaming_stale_seconds
             FROM sites s LEFT JOIN systems sy ON s.system_id = sy.id
         """):
             sys_id_to_sysname[row["id"]] = row["sysname"]
@@ -64,6 +65,12 @@ def build_config_from_db(db_path):
                 "rfid": row["rfid"],
                 "stid": row["stid"],
                 "system_id": row["system_id"],
+                # roaming_enabled/roaming_stale_seconds are SYSTEM-level
+                # (systems table), joined in above -- LEFT JOIN means a site
+                # with no system_id gets NULL/None here, which p25_system
+                # treats as "roaming off" (falsy) same as an explicit 0.
+                "roaming_enabled": bool(row["roaming_enabled"]),
+                "roaming_stale_seconds": row["roaming_stale_seconds"],
                 "_db_path": db_path,
                 "_db_system_id": row["id"],
                 "_db_tag_set_id": row["tag_set_id"],

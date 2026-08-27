@@ -265,6 +265,11 @@ async function loadSystems() {
           <td><select onchange="updateSystem(${sy.id}, {whitelist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("whitelist", sy.whitelist_id)}</select></td>
           <td><select onchange="updateSystem(${sy.id}, {blacklist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("blacklist", sy.blacklist_id)}</select></td>
           <td><input value="${esc(sy.notes) || ""}" onchange="updateSystem(${sy.id}, {notes: this.value})" style="width:95%"></td>
+          <td style="text-align:center;" title="Automatic handoff to a neighbor site (within this system) when the active site's signal degrades -- needs a dedicated 'scout' channel configured on a second tuner.">
+            <input type="checkbox" ${sy.roaming_enabled ? "checked" : ""} onchange="updateSystem(${sy.id}, {roaming_enabled: this.checked})">
+          </td>
+          <td><input type="number" min="1" placeholder="10" value="${sy.roaming_stale_seconds ?? ""}" style="width:60px"
+                onchange="updateSystem(${sy.id}, {roaming_stale_seconds: this.value ? parseInt(this.value) : null})"></td>
           <td><button class="action danger" onclick="deleteSystem(${sy.id})">Delete</button></td>`;
         tbody.appendChild(tr);
     }
@@ -519,14 +524,24 @@ async function loadDevices() {
         `<option value="${s.id}" ${s.id === selectedId ? "selected" : ""}>${esc(s.sysname)}</option>`
     ).join("");
 
+    const roleOptions = (selected) => ["primary", "scout"].map(r =>
+        `<option value="${r}" ${r === selected ? "selected" : ""}>${r}</option>`
+    ).join("");
+
     const chanTbody = document.querySelector("#channels-table tbody");
     chanTbody.innerHTML = "";
     for (const c of channels) {
+        const isScout = c.role === "scout";
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
           <td><select onchange="updateChannel(${c.id}, {device_id: parseInt(this.value)})">${deviceOptions(c.device_id)}</select></td>
-          <td><select onchange="updateChannel(${c.id}, {trunking_system_id: this.value ? parseInt(this.value) : null})">${siteOptions(c.trunking_system_id)}</select></td>
+          <td title="'scout' is roaming's dedicated neighbor-evaluation receiver -- never voice-eligible, never has a fixed site (the roaming coordinator points it dynamically).">
+            <select onchange="updateChannel(${c.id}, {role: this.value})">${roleOptions(c.role)}</select>
+          </td>
+          <td style="${isScout ? "opacity:0.5;" : ""}" title="${isScout ? "Ignored for a scout channel -- its target is set dynamically by the roaming coordinator." : ""}">
+            <select onchange="updateChannel(${c.id}, {trunking_system_id: this.value ? parseInt(this.value) : null})">${siteOptions(c.trunking_system_id)}</select>
+          </td>
           <td><input value="${esc(c.demod_type)}" onchange="updateChannel(${c.id}, {demod_type: this.value})" style="width:5em"></td>
           <td><input value="${esc(c.destination)}" onchange="updateChannel(${c.id}, {destination: this.value})" style="width:95%"></td>
           <td><input value="${esc(c.enable_analog)}" onchange="updateChannel(${c.id}, {enable_analog: this.value})" style="width:4em"></td>

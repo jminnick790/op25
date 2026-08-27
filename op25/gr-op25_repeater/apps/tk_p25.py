@@ -52,6 +52,21 @@ CALL_LOG_MAX_LEN = 200   # Maximum number of call_log entries to retain -- get_c
                          # enough that no consumer's poll interval can miss an entry between
                          # reads, not sized for a single destructive drain like it used to be.
 
+# Roaming (see rx_ctl.roam_tick()/start_scout()/evaluate_scout()/commit_roam()).
+# A scout channel spends ROAM_SCOUT_WINDOW_SECONDS evaluating each candidate
+# neighbor before moving to the next; ROAM_MIN_TSBK_COUNT is how many valid
+# TSBKs it needs to decode in that window to call a candidate "good enough."
+# ROAM_CHECK_INTERVAL mirrors CLEANUP_TIMER's pattern -- roam_tick() is
+# called on every process_qmsg() but only actually does anything this often.
+# ROAM_STALE_SECONDS_DEFAULT is the fallback trigger (control-channel
+# staleness) used when there's no active call to measure voice quality
+# against, or as the only trigger until the C++ voice-BER exposure lands --
+# see systems.roaming_stale_seconds for the per-system override.
+ROAM_CHECK_INTERVAL = 1.0
+ROAM_STALE_SECONDS_DEFAULT = 10.0
+ROAM_SCOUT_WINDOW_SECONDS = 3.0
+ROAM_MIN_TSBK_COUNT = 3
+
 #################
 # Helper functions
 
@@ -135,6 +150,33 @@ class rx_ctl(object):
                                                              config = chan,
                                                              rx_ctl = self)
 
+        # Roaming: (system_id, rfid, stid) -> p25_system, spanning every
+        # configured site regardless of which one is currently active --
+        # every site already gets a fully-initialized p25_system object at
+        # startup (see the loop above), this just makes them resolvable by
+        # P25 site identity instead of only by sysname. A site whose
+        # rfid/stid hasn't self-populated yet (never directly observed)
+        # simply has no entry here -- see rx_ctl's _resolve_candidates().
+        self.neighbor_map = {}
+        for sysname, group in self.systems.items():
+            system = group['system']
+            if system.rfid and system.stid and system.group_system_id is not None:
+                self.neighbor_map[(system.group_system_id, system.rfid, system.stid)] = system
+
+        # Roaming coordinator state -- see roam_tick()/start_scout()/
+        # evaluate_scout()/commit_roam(). primary_msgq_id/scout_msgq_id are
+        # discovered in add_receiver() below (there is at most one of each
+        # in this MVP); scout_current is the p25_system currently being
+        # evaluated, or None when the scout receiver is idle/unassigned.
+        self.primary_msgq_id = None
+        self.scout_msgq_id = None
+        self.scout_current = None
+        self.scout_home_system = None
+        self.scout_home_rx = None
+        self.scout_candidates = []
+        self.scout_window_start = 0.0
+        self.roam_last_check = 0.0
+
     # add_receiver is called once per radio channel defined in cfg.json
     def add_receiver(self, msgq_id, config, meta_q = None, freq = 0):
         if msgq_id in self.receivers: # should be impossible
@@ -144,6 +186,7 @@ class rx_ctl(object):
         rx_rcvr = None
         rx_name = from_dict(config, 'name', str(msgq_id))
         rx_sysname = from_dict(config, 'trunking_sysname', "undefined")
+        rx_role = from_dict(config, 'role', 'primary')
 
         if rx_sysname in self.systems:   # known trunking system
             rx_sys  = from_dict(self.systems[rx_sysname], 'system', None)
@@ -155,7 +198,17 @@ class rx_ctl(object):
                                    config        = config,
                                    meta_q        = meta_q,
                                    freq          = freq)
-            self.systems[rx_sysname]['receivers'].append(rx_rcvr)
+            if rx_role == 'scout':
+                # Deliberately NOT appended to self.systems[rx_sysname]
+                # ['receivers'] -- check_cc_assignments() scans those lists
+                # on every message and will permanently steal any idle
+                # receiver it finds sitting in one; a scout's target is
+                # managed entirely by the roaming coordinator instead (see
+                # start_scout()/_scout_next()/commit_roam()).
+                self.scout_msgq_id = msgq_id
+            else:
+                self.systems[rx_sysname]['receivers'].append(rx_rcvr)
+                self.primary_msgq_id = msgq_id
         else:                            # undefined or mis-configured trunking sysname
             sys.stderr.write("Receiver '%s' configured with unknown trunking_sysname '%s'\n" % (rx_name, rx_sysname))
 
@@ -258,6 +311,8 @@ class rx_ctl(object):
                     self.receivers[rcvr]['rx_rcvr'].check_expired_hold(time.time())
             self.cleanup_timer = curr_time
 
+        self.roam_tick(curr_time)
+
     # Check for control channel assignments to idle receivers
     def check_cc_assignments(self):
         for p25_sysname in self.systems:
@@ -277,6 +332,179 @@ class rx_ctl(object):
             if p25_system.cc_msgq_id is None: # no receivers assigned
                 if self.debug >= 5:
                     sys.stderr.write("%s [%s] has no idle receivers for control channel monitoring\n" % (log_ts.get(), p25_sysname))
+
+    # ------------------------------------------------------------ roaming --
+    # Automatic site handoff for the mobile use case: as the primary
+    # receiver's current site degrades, a dedicated scout receiver (role=
+    # 'scout' in the channels table -- never voice-eligible, never in any
+    # self.systems[x]['receivers'] list) evaluates known neighbor sites one
+    # at a time, and the primary hands off to the first one that proves
+    # itself decodable. Entirely opt-in (systems.roaming_enabled) and a
+    # strict no-op if no scout channel is configured at all.
+
+    def _is_degraded(self, system, curr_time):
+        # Primary trigger: sustained bad voice BER during an active call --
+        # not wired up yet (needs the C++ voice-BER exposure); this checks
+        # a flag nothing sets yet, so it's always False until that lands.
+        if system.voice_degraded:
+            return True
+        # Fallback trigger: control-channel staleness. Guarded on
+        # last_tsbk > 0 so a system that has never yet decoded anything
+        # (e.g. still starting up) doesn't immediately look "degraded".
+        stale_seconds = system.roaming_stale_seconds or ROAM_STALE_SECONDS_DEFAULT
+        return system.last_tsbk > 0 and (curr_time - system.last_tsbk) >= stale_seconds
+
+    def _resolve_candidates(self, home_system):
+        # home_system's live adjacent_data (already parsed from on-air
+        # adj_sts_bcst TSBKs, see p25_system.decode_tsbk()/decode_mbt_data())
+        # resolved against self.neighbor_map, scoped to the same logical
+        # system -- never cross-system, since talkgroups/whitelist/
+        # blacklist are system-level and a different system's tag set would
+        # be meaningless here.
+        seen = set()
+        candidates = []
+        for entry in home_system.adjacent_data.values():
+            rfid, stid = entry.get('rfid'), entry.get('stid')
+            if not rfid or not stid:
+                continue
+            candidate = self.neighbor_map.get((home_system.group_system_id, rfid, stid))
+            if candidate is None:
+                if self.debug >= 5:
+                    sys.stderr.write("%s [roam] neighbor rfid=%s stid=%s not resolvable (never observed) -- skipping\n" % (log_ts.get(), rfid, stid))
+                continue
+            if candidate is home_system or candidate.sysname in seen:
+                continue
+            seen.add(candidate.sysname)
+            candidates.append(candidate)
+        return candidates
+
+    def roam_tick(self, curr_time):
+        if curr_time < self.roam_last_check + ROAM_CHECK_INTERVAL:
+            return
+        self.roam_last_check = curr_time
+
+        if self.scout_msgq_id is None:
+            return  # no scout channel configured -- roaming inactive entirely
+        scout_entry = self.receivers.get(self.scout_msgq_id)
+        if scout_entry is None or scout_entry['rx_rcvr'] is None:
+            return
+
+        if self.scout_current is not None:
+            # A scout cycle is already in progress for self.scout_home_system.
+            home_rx = self.scout_home_rx
+            if home_rx is not None and not self._is_degraded(home_rx.system, curr_time):
+                if self.debug >= 5:
+                    sys.stderr.write("%s [roam] %s recovered on its own, aborting scout\n" % (log_ts.get(), home_rx.system.sysname))
+                self._abort_scout()
+                return
+            if curr_time >= self.scout_window_start + ROAM_SCOUT_WINDOW_SECONDS:
+                self.evaluate_scout(curr_time)
+            return
+
+        if self.primary_msgq_id is None:
+            return
+        primary_entry = self.receivers.get(self.primary_msgq_id)
+        if primary_entry is None or primary_entry['rx_rcvr'] is None:
+            return
+        home_rx = primary_entry['rx_rcvr']
+        home_system = home_rx.system
+        if not home_system.roaming_enabled:
+            return
+        if not self._is_degraded(home_system, curr_time):
+            return
+        self.start_scout(home_system, home_rx, curr_time)
+
+    def start_scout(self, home_system, home_rx, curr_time):
+        candidates = self._resolve_candidates(home_system)
+        if not candidates:
+            if self.debug >= 5:
+                sys.stderr.write("%s [roam] %s degraded but no resolvable neighbor candidates -- staying put\n" % (log_ts.get(), home_system.sysname))
+            return
+        self.scout_home_system = home_system
+        self.scout_home_rx = home_rx
+        self.scout_candidates = candidates
+        self._scout_next(curr_time)
+
+    def _scout_next(self, curr_time):
+        scout_entry = self.receivers.get(self.scout_msgq_id)
+        scout_rx = scout_entry['rx_rcvr'] if scout_entry else None
+        if scout_rx is None:
+            self._abort_scout()
+            return
+        if not self.scout_candidates:
+            # Exhausted every resolvable candidate with nothing good enough
+            # this cycle -- give up for now. roam_tick() will naturally
+            # retry from scratch (fresh candidate list) on the next trigger.
+            if self.debug >= 5:
+                sys.stderr.write("%s [roam] exhausted neighbor candidates for %s, none good enough\n" % (log_ts.get(), self.scout_home_system.sysname))
+            self._abort_scout()
+            return
+
+        candidate = self.scout_candidates.pop(0)
+        self.scout_current = candidate
+        candidate.scout_window_tsbk_baseline = candidate.stats['tsbk_count']
+        scout_rx.retarget(candidate)
+        self.receivers[self.scout_msgq_id]['sysname'] = candidate.sysname
+        scout_rx.tune_cc(candidate.get_cc(self.scout_msgq_id))
+        self.scout_window_start = curr_time
+        if self.debug >= 5:
+            sys.stderr.write("%s [roam] scouting %s (candidate for %s)\n" % (log_ts.get(), candidate.sysname, self.scout_home_system.sysname))
+
+    def _abort_scout(self):
+        if self.scout_current is not None:
+            self.scout_current.release_cc(self.scout_msgq_id)
+            scout_entry = self.receivers.get(self.scout_msgq_id)
+            if scout_entry is not None and scout_entry['rx_rcvr'] is not None:
+                scout_entry['rx_rcvr'].idle_rx()
+        self.scout_current = None
+        self.scout_home_system = None
+        self.scout_home_rx = None
+        self.scout_candidates = []
+
+    def evaluate_scout(self, curr_time):
+        candidate = self.scout_current
+        decoded = candidate.stats['tsbk_count'] - candidate.scout_window_tsbk_baseline
+        good = candidate.last_tsbk > 0 and (curr_time - candidate.last_tsbk) < ROAM_SCOUT_WINDOW_SECONDS \
+            and decoded >= ROAM_MIN_TSBK_COUNT
+        if good:
+            self.commit_roam(candidate, curr_time)
+            return
+        if self.debug >= 5:
+            sys.stderr.write("%s [roam] %s scouted, not good enough (tsbks=%d)\n" % (log_ts.get(), candidate.sysname, decoded))
+        self._scout_next(curr_time)
+
+    def commit_roam(self, candidate, curr_time):
+        home_system = self.scout_home_system
+        home_rx = self.scout_home_rx
+        scout_entry = self.receivers.get(self.scout_msgq_id)
+        scout_rx = scout_entry['rx_rcvr'] if scout_entry else None
+
+        if self.debug >= 1:
+            sys.stderr.write("%s [roam] handing off %s -> %s\n" % (log_ts.get(), home_system.sysname, candidate.sysname))
+
+        # The scout proved this candidate out (likely already synced to it)
+        # -- release its CC claim first so the primary can take over the
+        # same system object's cc_msgq_id slot; get_cc() only ever hands
+        # out a frequency to the msgq_id that currently holds (or has no)
+        # claim on cc_msgq_id, so ordering here matters.
+        candidate.release_cc(self.scout_msgq_id)
+        if scout_rx is not None:
+            scout_rx.idle_rx()
+
+        home_system.release_cc(self.primary_msgq_id)
+        home_rx.retarget(candidate)
+        self.receivers[self.primary_msgq_id]['sysname'] = candidate.sysname
+        home_rx.tune_cc(candidate.get_cc(self.primary_msgq_id))
+
+        # The old home site isn't special-cased -- released, it's just
+        # another future scout candidate like any other, naturally
+        # re-evaluated if the vehicle loops back. The scout receiver goes
+        # idle until the next trigger (against whatever system the primary
+        # is on now); it doesn't proactively keep scouting.
+        self.scout_current = None
+        self.scout_home_system = None
+        self.scout_home_rx = None
+        self.scout_candidates = []
 
     # ui_command handles all requests from user interface
     def ui_command(self, cmd, data, msgq_id):
@@ -357,6 +585,21 @@ class rx_ctl(object):
             d['log'] = list(self.call_log)
         return json.dumps(d)
 
+    def get_active_channels_json(self):
+        # Best-effort DB write-back hook: docker/config-api/app.py's
+        # persist_state() reads this to update channels.trunking_system_id
+        # after a successful roam, so a restart resumes near wherever the
+        # vehicle actually ended up. Only the primary channel's target is
+        # reported -- matches every other single-primary-channel assumption
+        # already in this codebase (there's nothing meaningful to report for
+        # a scout, which has no static target of its own).
+        primary_system = None
+        if self.primary_msgq_id is not None:
+            entry = self.receivers.get(self.primary_msgq_id)
+            if entry is not None and entry['rx_rcvr'] is not None:
+                primary_system = entry['rx_rcvr'].system.sysname
+        return json.dumps({'json_type': 'active_channels', 'primary_system': primary_system})
+
     def log_call(self, sysid, rcvr, freq, slot, prio, tgid, tgtag, rid, rtag):
         with self.call_log_mutex:
             self.call_log.append({ "time":    time.time(),
@@ -425,6 +668,33 @@ class p25_system(object):
         self.last_expiry_check = 0.0
         self.stats = {}
         self.stats['tsbk_count'] = 0
+
+        # Roaming: this site's own P25 identity (RFSS Status Broadcast) and
+        # which logical system it belongs to -- rx_ctl.__init__() uses these
+        # to build a (system_id, rfid, stid) -> p25_system map at startup,
+        # resolving a neighbor's adjacent_data broadcast to one of the
+        # OTHER already-configured p25_system objects in the same system.
+        # None until self-populated (see docker/config-api/app.py's
+        # persist_state()) -- a site that's never been observed can't be
+        # resolved as a roaming candidate yet.
+        self.rfid = from_dict(config, 'rfid', None)
+        self.stid = from_dict(config, 'stid', None)
+        self.group_system_id = from_dict(config, 'system_id', None)
+        self.roaming_enabled = bool(from_dict(config, 'roaming_enabled', False))
+        self.roaming_stale_seconds = from_dict(config, 'roaming_stale_seconds', None)
+        # Primary trigger for roaming (sustained bad voice BER during an
+        # active call) -- not wired up yet; set by nothing until the C++
+        # voice-BER exposure lands, at which point something will flip this
+        # true on sustained bad decode quality. rx_ctl._is_degraded() checks
+        # it first, falling back to last_tsbk staleness when it's False.
+        self.voice_degraded = False
+        # Snapshot of stats['tsbk_count'] taken when this site's scout
+        # observation window begins (rx_ctl's _scout_next()) -- reusing the
+        # existing counter rather than adding a second increment site to
+        # every decode path. evaluate_scout() compares the current count
+        # against this baseline to see how many TSBKs arrived DURING the
+        # window, the "is this candidate actually usable right now" signal.
+        self.scout_window_tsbk_baseline = 0
 
         sys.stderr.write("%s [%s] Initializing P25 system\n" % (log_ts.get(), self.sysname))
 
@@ -2312,6 +2582,39 @@ class p25_receiver(object):
                 self.fa_ctrl({'tuner': self.msgq_id, 'cmd': 'set_slotid', 'slotid': 4})      # disable receiver (idle)
             self.tuner_idle = True
             self.current_slot = None
+
+    def retarget(self, new_system):
+        # Rebind this receiver to a different p25_system -- used by roaming
+        # (rx_ctl's _scout_next()/commit_roam()). A receiver's binding to a
+        # system is static in three places: this reference, rx_ctl.
+        # receivers[msgq_id]['sysname'] (used to route incoming TSBK/MBT
+        # messages -- rx_ctl updates this itself right after calling this
+        # method), and list membership in rx_ctl.systems[sysname]
+        # ['receivers'] (a scout receiver is deliberately never added to any
+        # such list in the first place, so there's nothing to move there).
+        # This method only handles what's local to the receiver: releasing
+        # CC from the old system if held, refreshing everything cached at
+        # construction/post_init time, and resetting tuning/call state so
+        # the next tune_cc() starts clean instead of carrying over the old
+        # system's NAC/xormask/hold state.
+        if self.system is not None:
+            self.system.release_cc(self.msgq_id)
+        self.system = new_system
+        self.talkgroups = new_system.get_talkgroups()
+        self.crypt_behavior = new_system.get_crypt_behavior()
+        self.fa_ctrl({'tuner': self.msgq_id, 'cmd': 'crypt_behavior', 'behavior': self.crypt_behavior})
+        self.load_bl_wl()
+        self.tgid_hold_time = float(from_dict(new_system.config, 'tgid_hold_time', TGID_HOLD_TIME))
+        nac, wacn, sysid, valid = new_system.get_tdma_params()
+        if valid and self.fa_ctrl is not None:
+            self.fa_ctrl({'tuner': self.msgq_id, 'cmd': 'set_xormask', 'nac': nac, 'wacn': wacn, 'sysid': sysid})
+        self.current_nac = 0            # force set_nac() to re-send on the next tune_cc()
+        self.current_tgid = None
+        self.current_slot = None
+        self.hold_tgid = None
+        self.hold_until = 0.0
+        self.hold_mode = False
+        self.tuned_frequency = 0
 
     def tune_cc(self, freq):
         if freq is None or int(freq) == 0:  # freq will be None when there is already another receiver listening to the control channel

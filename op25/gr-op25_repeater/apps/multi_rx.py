@@ -866,6 +866,7 @@ class rx_block (gr.top_block):
             ui_rsp.append(self.ui_freq_update())
             ui_rsp.append(self.ui_calllog_update())
             ui_rsp.append(self.ui_plot_update())
+            ui_rsp.append(self.ui_active_channels())
         elif s == 'toggle_plot':
             if not self.get_interactive():
                 sys.stderr.write("%s Cannot start plots for non-realtime (replay) sessions\n" % log_ts.get())
@@ -947,6 +948,12 @@ class rx_block (gr.top_block):
         if self.trunking is None or self.trunk_rx is None:
             return { }
         js = json.loads(self.trunk_rx.get_call_log())
+        return js
+
+    def ui_active_channels(self):
+        if self.trunking is None or self.trunk_rx is None:
+            return { }
+        js = json.loads(self.trunk_rx.get_active_channels_json())
         return js
 
     def ui_freq_update(self):

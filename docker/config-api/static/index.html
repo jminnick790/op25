@@ -34,8 +34,8 @@
   <p class="hint">A system is a logical network (e.g. "NC VIPER") that several sites on the Sites tab can belong to. The talkgroup tag set and white/blacklist apply here, once, to every site of the system.</p>
   <div class="table-wrap">
   <table id="systems-table">
-    <colgroup><col style="width:20%"><col style="width:18%"><col style="width:18%"><col style="width:18%"><col style="width:14%"><col style="width:12%"></colgroup>
-    <thead><tr><th>Name</th><th>Tag Set</th><th>Whitelist</th><th>Blacklist</th><th class="truncate">Notes</th><th></th></tr></thead>
+    <colgroup><col style="width:17%"><col style="width:15%"><col style="width:15%"><col style="width:15%"><col style="width:13%"><col style="width:8%"><col style="width:8%"><col style="width:9%"></colgroup>
+    <thead><tr><th>Name</th><th>Tag Set</th><th>Whitelist</th><th>Blacklist</th><th class="truncate">Notes</th><th title="Automatic handoff to a neighbor site as the active site's signal degrades -- needs a dedicated 'scout' channel on a second tuner (see Channels tab)">Roaming</th><th title="Seconds of control-channel silence before roaming gives up on the active site and tries a neighbor. Blank = default (10s).">Stale (s)</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   </div>
@@ -170,8 +170,8 @@
   <p class="hint">Channels bind one device to one active site. Also always requires a restart -- use "Set Active" on the Sites tab for the common case of switching which site a channel points at.</p>
   <div class="table-wrap">
   <table id="channels-table">
-    <colgroup><col style="width:16%"><col style="width:10%"><col style="width:18%"><col style="width:12%"><col style="width:24%"><col style="width:10%"><col style="width:10%"></colgroup>
-    <thead><tr><th>Name</th><th>Device</th><th>Site</th><th>Demod</th><th>Destination</th><th>Analog</th><th></th></tr></thead>
+    <colgroup><col style="width:14%"><col style="width:9%"><col style="width:9%"><col style="width:16%"><col style="width:11%"><col style="width:22%"><col style="width:9%"><col style="width:10%"></colgroup>
+    <thead><tr><th>Name</th><th>Device</th><th title="'scout' is roaming's dedicated neighbor-evaluation receiver -- see the Systems tab's Roaming column">Role</th><th>Site</th><th>Demod</th><th>Destination</th><th>Analog</th><th></th></tr></thead>
     <tbody></tbody>
   </table>
   </div>
