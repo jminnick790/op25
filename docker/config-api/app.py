@@ -364,6 +364,16 @@ def ensure_schema():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_roam_events_system_time ON roam_events(system_id, time)")
             changed.append("created roam_events table")
 
+        # Dedup key for persist_state()'s INSERT OR IGNORE -- rx_ctl's
+        # pending_roam_events buffer is now non-destructive (see tk_p25.py),
+        # so the same buffered event gets re-delivered on every "update"
+        # poll until it ages out; time is a high-precision timestamp
+        # captured once per event, so this only collapses genuine repeat
+        # deliveries, not distinct events. A separate, always-run statement
+        # (not gated on table creation) so it also applies to a roam_events
+        # table created by an earlier version of this migration.
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roam_events_dedup ON roam_events(system_id, time, event)")
+
         conn.commit()
     finally:
         conn.close()
@@ -1303,20 +1313,26 @@ def persist_state(conn, responses, should_persist_trunk=True):
             )
 
     if roam_events:
-        # Deliberately NOT gated by the same throttle that guards the rest
-        # of this function (ingest_state_push() only calls persist_state()
-        # at all once every HISTORY_POLL_INTERVAL) -- roam events are rare
-        # and discrete, not a continuous 1/sec stream like trunk state, so
-        # a few seconds of batching latency before they land is fine, but
-        # dropping one because it landed on a throttled tick would defeat
-        # the point of having this log at all. rx_ctl.get_roam_events_json()
-        # (tk_p25.py) drains its pending list on every read, so nothing
-        # accumulates worker-side either way.
+        # Deliberately NOT gated by should_persist_trunk (see the throttle
+        # comment on that flag above) -- roam events are rare and discrete,
+        # not a continuous 1/sec stream, so dropping one because it landed
+        # on a throttled tick would defeat the point of having this log.
+        #
+        # rx_ctl.get_roam_events_json() (tk_p25.py) is a non-destructive
+        # read of a bounded buffer, not a drain -- more than one thing can
+        # trigger an "update" command (the worker's own state_pusher, and
+        # the New UI's browser-side poll), so a destructive read meant
+        # whichever one polled first silently stole events, including the
+        # browser poll which does nothing with them. Non-destructive means
+        # the SAME buffered event arrives here on every subsequent poll
+        # too, hence INSERT OR IGNORE against the (system_id, time, event)
+        # unique index -- time is captured once per event, so this only
+        # collapses genuine repeat deliveries, not distinct real events.
         for evt in roam_events.get("events", []):
             if not isinstance(evt, dict) or evt.get("time") is None or evt.get("event") is None:
                 continue
             conn.execute(
-                """INSERT INTO roam_events (system_id, time, event, from_site, to_site, detail)
+                """INSERT OR IGNORE INTO roam_events (system_id, time, event, from_site, to_site, detail)
                    VALUES (?, ?, ?, ?, ?, ?)""",
                 (evt.get("system_id"), _epoch_to_iso(evt["time"]), evt["event"],
                  evt.get("from_site"), evt.get("to_site"), evt.get("detail")),

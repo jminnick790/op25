@@ -47,6 +47,7 @@ EXPIRY_TIMER = 0.2       # Number of seconds between checks for tgid/freq expiry
 PATCH_EXPIRY_TIME = 20.0 # Number of seconds until patch expiry
 WUID_EXPIRY_TIME = 14400 # Number of seconds until WUID registration expiry (4hrs, per TIA-102.AABD)
 CLEANUP_TIMER = 0.5      # Number of seconds between cleanup intervals
+ROAM_EVENTS_MAX_LEN = 50 # Maximum number of pending roam events to retain -- see get_roam_events_json()
 CALL_LOG_MAX_LEN = 200   # Maximum number of call_log entries to retain -- get_call_log()
                          # is non-destructive (see below), so this just needs to be large
                          # enough that no consumer's poll interval can miss an entry between
@@ -190,12 +191,24 @@ class rx_ctl(object):
         self.scout_candidates = []
         self.scout_window_start = 0.0
         self.roam_last_check = 0.0
-        # Drained by get_roam_events_json() on every "update" cycle and
-        # pushed to the server for persistence (roam_events table) -- see
+        # Read by get_roam_events_json() on every "update" cycle and pushed
+        # to the server for persistence (roam_events table) -- see
         # _log_roam_event(). Ephemeral stderr logging alone (the sys.stderr
         # .write calls throughout this section) isn't reviewable after the
         # fact if nobody was tailing logs live during a drive.
-        self.pending_roam_events = []
+        #
+        # Non-destructive (like call_log/call_log_mutex above), for the
+        # same reason: more than one thing can trigger an "update" command
+        # -- the worker's own state_pusher thread (the one that actually
+        # reaches the DB) and the New UI's browser-side poll (do_update(),
+        # still running alongside SSE), which don't run on the same thread.
+        # A destructive drain meant whichever one polled first silently
+        # stole the pending events -- including the browser poll, which
+        # doesn't do anything with roam_events at all, so a chunk of events
+        # would just vanish depending on race timing. Bounded deque instead
+        # of an unbounded list for the same reason call_log is bounded.
+        self.pending_roam_events = deque(maxlen=ROAM_EVENTS_MAX_LEN)
+        self.roam_events_mutex = TimeoutLock(timeout=1.0)
 
     # add_receiver is called once per radio channel defined in cfg.json
     def add_receiver(self, msgq_id, config, meta_q = None, freq = 0):
@@ -363,14 +376,15 @@ class rx_ctl(object):
     # strict no-op if no scout channel is configured at all.
 
     def _log_roam_event(self, home_system, event, to_site=None, detail=None):
-        self.pending_roam_events.append({
-            'time': time.time(),
-            'system_id': home_system.group_system_id,
-            'event': event,
-            'from_site': home_system.sysname,
-            'to_site': to_site,
-            'detail': detail,
-        })
+        with self.roam_events_mutex:
+            self.pending_roam_events.append({
+                'time': time.time(),
+                'system_id': home_system.group_system_id,
+                'event': event,
+                'from_site': home_system.sysname,
+                'to_site': to_site,
+                'detail': detail,
+            })
 
     def _is_degraded(self, system, curr_time):
         # Primary trigger: sustained bad voice BER during an active call --
@@ -673,12 +687,12 @@ class rx_ctl(object):
         return json.dumps({'json_type': 'active_channels', 'primary_system': primary_system})
 
     def get_roam_events_json(self):
-        # Destructive drain, unlike get_call_log()'s non-destructive read --
-        # server/app.py's ingest handler is the only consumer, so there's no
-        # multi-consumer reason to keep a ring buffer here; whatever's
-        # pending gets pushed once and cleared.
-        events = self.pending_roam_events
-        self.pending_roam_events = []
+        # Non-destructive, same reasoning as get_call_log() -- see the
+        # comment on pending_roam_events in __init__. The server dedupes
+        # on (system_id, time, event) when persisting, so re-delivering the
+        # same buffered events on every poll is safe.
+        with self.roam_events_mutex:
+            events = list(self.pending_roam_events)
         return json.dumps({'json_type': 'roam_events', 'events': events})
 
     def log_call(self, sysid, rcvr, freq, slot, prio, tgid, tgtag, rid, rtag):

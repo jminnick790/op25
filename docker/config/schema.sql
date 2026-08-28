@@ -241,8 +241,14 @@ CREATE TABLE roam_events (
     event       TEXT NOT NULL CHECK (event IN ('scout_start','no_candidates','scout_reject','commit','recovered','exhausted')),
     from_site   TEXT,
     to_site     TEXT,
-    detail      TEXT
+    detail      TEXT,
+    -- rx_ctl's pending_roam_events buffer (tk_p25.py) is a non-destructive
+    -- read, re-delivered on every "update" poll until it ages out of that
+    -- buffer -- this is what persist_state()'s INSERT OR IGNORE dedupes
+    -- against. time is a high-precision timestamp captured once per event,
+    -- so this only collapses genuine repeat deliveries, not real events.
+    UNIQUE (system_id, time, event)
 );
 CREATE INDEX idx_roam_events_system_time ON roam_events(system_id, time);
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
