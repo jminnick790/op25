@@ -224,4 +224,25 @@ CREATE TABLE neighbor_sites (
 );
 CREATE INDEX idx_neighbor_sites_system ON neighbor_sites(trunked_system_id);
 
-PRAGMA user_version = 6;
+-- Append-only history of what the roaming coordinator (tk_p25.py's rx_ctl)
+-- actually did -- since scouting/handoff decisions happen entirely
+-- in-process on the worker with only ephemeral stderr logging otherwise,
+-- this is the only way to review what roaming did after the fact (e.g.
+-- after a drive) instead of needing to have been tailing logs live.
+-- system_id (not a site FK) since a roaming journey's home SYSTEM stays
+-- constant across multiple site hops -- from_site/to_site are denormalized
+-- sysname snapshots, not FKs, same reasoning as call_history.tgtag/rtag:
+-- the log should show what a site was called at the time, not whatever
+-- it's been renamed to since.
+CREATE TABLE roam_events (
+    id          INTEGER PRIMARY KEY,
+    system_id   INTEGER REFERENCES systems(id) ON DELETE CASCADE,
+    time        TEXT NOT NULL,
+    event       TEXT NOT NULL CHECK (event IN ('scout_start','no_candidates','scout_reject','commit','recovered','exhausted')),
+    from_site   TEXT,
+    to_site     TEXT,
+    detail      TEXT
+);
+CREATE INDEX idx_roam_events_system_time ON roam_events(system_id, time);
+
+PRAGMA user_version = 7;

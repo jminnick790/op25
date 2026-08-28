@@ -190,6 +190,12 @@ class rx_ctl(object):
         self.scout_candidates = []
         self.scout_window_start = 0.0
         self.roam_last_check = 0.0
+        # Drained by get_roam_events_json() on every "update" cycle and
+        # pushed to the server for persistence (roam_events table) -- see
+        # _log_roam_event(). Ephemeral stderr logging alone (the sys.stderr
+        # .write calls throughout this section) isn't reviewable after the
+        # fact if nobody was tailing logs live during a drive.
+        self.pending_roam_events = []
 
     # add_receiver is called once per radio channel defined in cfg.json
     def add_receiver(self, msgq_id, config, meta_q = None, freq = 0):
@@ -356,6 +362,16 @@ class rx_ctl(object):
     # itself decodable. Entirely opt-in (systems.roaming_enabled) and a
     # strict no-op if no scout channel is configured at all.
 
+    def _log_roam_event(self, home_system, event, to_site=None, detail=None):
+        self.pending_roam_events.append({
+            'time': time.time(),
+            'system_id': home_system.group_system_id,
+            'event': event,
+            'from_site': home_system.sysname,
+            'to_site': to_site,
+            'detail': detail,
+        })
+
     def _is_degraded(self, system, curr_time):
         # Primary trigger: sustained bad voice BER during an active call --
         # see _check_voice_degraded(), which sets this flag once a tick.
@@ -444,6 +460,7 @@ class rx_ctl(object):
             if home_rx is not None and not self._is_degraded(home_rx.system, curr_time):
                 if self.debug >= 5:
                     sys.stderr.write("%s [roam] %s recovered on its own, aborting scout\n" % (log_ts.get(), home_rx.system.sysname))
+                self._log_roam_event(home_rx.system, 'recovered')
                 self._abort_scout()
                 return
             if curr_time >= self.scout_window_start + ROAM_SCOUT_WINDOW_SECONDS:
@@ -461,13 +478,16 @@ class rx_ctl(object):
             return
         if not self._is_degraded(home_system, curr_time):
             return
-        self.start_scout(home_system, home_rx, curr_time)
+        reason = 'voice_ber' if home_system.voice_degraded else 'cc_stale'
+        self.start_scout(home_system, home_rx, curr_time, reason)
 
-    def start_scout(self, home_system, home_rx, curr_time):
+    def start_scout(self, home_system, home_rx, curr_time, reason='unknown'):
+        self._log_roam_event(home_system, 'scout_start', detail=reason)
         candidates = self._resolve_candidates(home_system)
         if not candidates:
             if self.debug >= 5:
                 sys.stderr.write("%s [roam] %s degraded but no resolvable neighbor candidates -- staying put\n" % (log_ts.get(), home_system.sysname))
+            self._log_roam_event(home_system, 'no_candidates')
             return
         self.scout_home_system = home_system
         self.scout_home_rx = home_rx
@@ -486,6 +506,7 @@ class rx_ctl(object):
             # retry from scratch (fresh candidate list) on the next trigger.
             if self.debug >= 5:
                 sys.stderr.write("%s [roam] exhausted neighbor candidates for %s, none good enough\n" % (log_ts.get(), self.scout_home_system.sysname))
+            self._log_roam_event(self.scout_home_system, 'exhausted')
             self._abort_scout()
             return
 
@@ -520,6 +541,7 @@ class rx_ctl(object):
             return
         if self.debug >= 5:
             sys.stderr.write("%s [roam] %s scouted, not good enough (tsbks=%d)\n" % (log_ts.get(), candidate.sysname, decoded))
+        self._log_roam_event(self.scout_home_system, 'scout_reject', to_site=candidate.sysname, detail=f"tsbks={decoded}")
         self._scout_next(curr_time)
 
     def commit_roam(self, candidate, curr_time):
@@ -530,6 +552,7 @@ class rx_ctl(object):
 
         if self.debug >= 1:
             sys.stderr.write("%s [roam] handing off %s -> %s\n" % (log_ts.get(), home_system.sysname, candidate.sysname))
+        self._log_roam_event(home_system, 'commit', to_site=candidate.sysname)
 
         # The scout proved this candidate out (likely already synced to it)
         # -- release its CC claim first so the primary can take over the
@@ -648,6 +671,15 @@ class rx_ctl(object):
             if entry is not None and entry['rx_rcvr'] is not None:
                 primary_system = entry['rx_rcvr'].system.sysname
         return json.dumps({'json_type': 'active_channels', 'primary_system': primary_system})
+
+    def get_roam_events_json(self):
+        # Destructive drain, unlike get_call_log()'s non-destructive read --
+        # server/app.py's ingest handler is the only consumer, so there's no
+        # multi-consumer reason to keep a ring buffer here; whatever's
+        # pending gets pushed once and cleared.
+        events = self.pending_roam_events
+        self.pending_roam_events = []
+        return json.dumps({'json_type': 'roam_events', 'events': events})
 
     def log_call(self, sysid, rcvr, freq, slot, prio, tgid, tgtag, rid, rtag):
         with self.call_log_mutex:

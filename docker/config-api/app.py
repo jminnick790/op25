@@ -348,6 +348,22 @@ def ensure_schema():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_neighbor_sites_system ON neighbor_sites(trunked_system_id)")
             changed.append("created neighbor_sites table")
 
+        # roam_events (roaming coordinator's own history -- see schema.sql for details)
+        if not _table_exists(conn, "roam_events"):
+            conn.execute("""
+                CREATE TABLE roam_events (
+                    id          INTEGER PRIMARY KEY,
+                    system_id   INTEGER REFERENCES systems(id) ON DELETE CASCADE,
+                    time        TEXT NOT NULL,
+                    event       TEXT NOT NULL CHECK (event IN ('scout_start','no_candidates','scout_reject','commit','recovered','exhausted')),
+                    from_site   TEXT,
+                    to_site     TEXT,
+                    detail      TEXT
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_roam_events_system_time ON roam_events(system_id, time)")
+            changed.append("created roam_events table")
+
         conn.commit()
     finally:
         conn.close()
@@ -901,6 +917,7 @@ ROUTES = [
     ("GET", r"^/api/subscriber_registrations$", lambda conn, m, body, qs: list_subscriber_registrations(conn, qs)),
     ("GET", r"^/api/call_history$", lambda conn, m, body, qs: list_call_history(conn, qs)),
     ("GET", r"^/api/neighbor_sites$", lambda conn, m, body, qs: list_neighbor_sites(conn, qs)),
+    ("GET", r"^/api/roam_events$", lambda conn, m, body, qs: list_roam_events(conn, qs)),
     ("GET", r"^/api/analysis/tg_activity$", lambda conn, m, body, qs: tg_activity(conn, qs)),
     ("GET", r"^/api/analysis/hopping_radios$", lambda conn, m, body, qs: hopping_radios(conn, qs)),
 ]
@@ -1189,6 +1206,7 @@ def persist_state(conn, responses):
     trunk_update = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "trunk_update"), None)
     call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
     active_channels = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "active_channels"), None)
+    roam_events = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "roam_events"), None)
 
     # sysname -> site row, built once per push whenever anything below needs
     # it (trunk_update entries, or a roam write-back). trunk_update carries
@@ -1270,6 +1288,26 @@ def persist_state(conn, responses):
                 "UPDATE channels SET trunking_system_id=? "
                 "WHERE role='primary' AND (trunking_system_id IS NULL OR trunking_system_id != ?)",
                 (site_row["id"], site_row["id"]),
+            )
+
+    if roam_events:
+        # Deliberately NOT gated by the same throttle that guards the rest
+        # of this function (ingest_state_push() only calls persist_state()
+        # at all once every HISTORY_POLL_INTERVAL) -- roam events are rare
+        # and discrete, not a continuous 1/sec stream like trunk state, so
+        # a few seconds of batching latency before they land is fine, but
+        # dropping one because it landed on a throttled tick would defeat
+        # the point of having this log at all. rx_ctl.get_roam_events_json()
+        # (tk_p25.py) drains its pending list on every read, so nothing
+        # accumulates worker-side either way.
+        for evt in roam_events.get("events", []):
+            if not isinstance(evt, dict) or evt.get("time") is None or evt.get("event") is None:
+                continue
+            conn.execute(
+                """INSERT INTO roam_events (system_id, time, event, from_site, to_site, detail)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (evt.get("system_id"), _epoch_to_iso(evt["time"]), evt["event"],
+                 evt.get("from_site"), evt.get("to_site"), evt.get("detail")),
             )
 
     if call_log:
@@ -1447,6 +1485,26 @@ def list_neighbor_sites(conn, qs):
     rows = conn.execute(
         "SELECT * FROM neighbor_sites WHERE trunked_system_id = ? ORDER BY freq", (int(site_id),)
     ).fetchall()
+    return rows_to_list(rows)
+
+
+def list_roam_events(conn, qs):
+    window_min = float(qs.get("minutes", ["1440"])[0])  # default 24h -- a roaming review is usually "since the drive started"
+    limit = int(qs.get("limit", ["500"])[0])
+    system_id = qs.get("system_id", [None])[0]
+    q = """
+    SELECT re.*, sy.name AS system_name
+    FROM roam_events re
+    LEFT JOIN systems sy ON re.system_id = sy.id
+    WHERE re.time > datetime('now', ?)
+    """
+    params = [f"-{window_min} minutes"]
+    if system_id is not None:
+        q += " AND re.system_id = ?"
+        params.append(int(system_id))
+    q += " ORDER BY re.time DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(q, params).fetchall()
     return rows_to_list(rows)
 
 
