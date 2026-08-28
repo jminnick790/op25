@@ -1202,7 +1202,19 @@ def _ensure_talkgroup_placeholder(conn, tag_set_id, tgid):
     )
 
 
-def persist_state(conn, responses):
+def persist_state(conn, responses, should_persist_trunk=True):
+    # should_persist_trunk gates the continuous, high-frequency writes
+    # (trunk_update/call_log-derived -- subscriber_registrations,
+    # call_history, neighbor_sites, rfid/stid self-population) so those
+    # don't run 5x more often than HISTORY_POLL_INTERVAL intends. roam_events
+    # deliberately ignores this flag -- see ingest_state_push(), which now
+    # calls this function on EVERY tick specifically so that's true. It used
+    # to not be: this function was only ever invoked when the outer
+    # should_persist gate passed, which silently dropped whatever
+    # roam_events happened to arrive on a throttled tick (the worker had
+    # already drained them from its pending list assuming delivery
+    # succeeded -- a real bug, not a hypothetical one, first surfaced by a
+    # scout_reject landing while its earlier scout_start silently vanished).
     trunk_update = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "trunk_update"), None)
     call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
     active_channels = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "active_channels"), None)
@@ -1218,7 +1230,7 @@ def persist_state(conn, responses):
     # silently misattributed/dropped data the moment a second real receiver
     # existed -- fixed here, not a roaming-specific hack).
     sites_by_name = {}
-    if trunk_update or active_channels:
+    if should_persist_trunk and (trunk_update or active_channels):
         sites_by_name = {
             row["sysname"]: row
             for row in conn.execute(
@@ -1227,7 +1239,7 @@ def persist_state(conn, responses):
             )
         }
 
-    if trunk_update:
+    if should_persist_trunk and trunk_update:
         for key, val in trunk_update.items():
             if key in ("json_type", "nac") or not isinstance(val, dict):
                 continue
@@ -1274,7 +1286,7 @@ def persist_state(conn, responses):
                      _epoch_to_iso(time.time())),
                 )
 
-    if active_channels and active_channels.get("primary_system"):
+    if should_persist_trunk and active_channels and active_channels.get("primary_system"):
         # Best-effort DB write-back after a successful roam, so a restart
         # resumes near wherever the vehicle actually ended up rather than
         # the original "Set Active" site -- see tk_p25.py's commit_roam().
@@ -1310,7 +1322,7 @@ def persist_state(conn, responses):
                  evt.get("from_site"), evt.get("to_site"), evt.get("detail")),
             )
 
-    if call_log:
+    if should_persist_trunk and call_log:
         # Unlike trunk_update, a call_log entry carries no per-entry system
         # identifier (tk_p25.py's log_call() records sysid/rcvr, not a
         # sysname) -- but since scout channels are never voice-eligible by
@@ -1357,17 +1369,20 @@ def ingest_state_push(environ, start_response):
     global _last_persist_ts
     now = time.time()
     with _persist_lock:
-        should_persist = (now - _last_persist_ts) >= HISTORY_POLL_INTERVAL
-        if should_persist:
+        should_persist_trunk = (now - _last_persist_ts) >= HISTORY_POLL_INTERVAL
+        if should_persist_trunk:
             _last_persist_ts = now
-    if should_persist:
-        conn = db()
-        try:
-            persist_state(conn, responses)
-        except Exception as e:
-            sys.stderr.write(f"ingest_state_push: persist failed: {e}\n")
-        finally:
-            conn.close()
+    # Always called now, every tick -- should_persist_trunk only throttles
+    # the continuous trunk_update/call_log writes inside persist_state();
+    # roam_events (rare, discrete) get processed on every call regardless,
+    # so nothing dropped on a throttled tick like it used to be.
+    conn = db()
+    try:
+        persist_state(conn, responses, should_persist_trunk)
+    except Exception as e:
+        sys.stderr.write(f"ingest_state_push: persist failed: {e}\n")
+    finally:
+        conn.close()
 
     # main.js's SSE handler never consumes call_log (history comes from this
     # DB now, not a live push) -- strip it before broadcasting. Same
