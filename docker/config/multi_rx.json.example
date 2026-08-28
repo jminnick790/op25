@@ -1,0 +1,81 @@
+{
+    "channels": [
+        {
+            "name": "Example System Site A Channel",
+            "device": "sdr0",
+            "trunking_sysname": "Example System - Site A",
+            "demod_type": "cqpsk",
+            "destination": "ws://0.0.0.0:8081",
+            "meta_stream_name": "",
+            "excess_bw": 0.2,
+            "filter_type": "rc",
+            "if_rate": 24000,
+            "plot": "",
+            "symbol_rate": 4800,
+            "enable_analog": "off",
+            "whitelist": "",
+            "blacklist": "",
+            "crypt_keys": ""
+        }
+    ],
+    "devices": [
+        {
+            "args": "rtl_tcp=192.0.2.10:1234",
+            "gains": "LNA:45",
+            "name": "sdr0",
+            "offset": 0,
+            "ppm": 0,
+            "usable_bw_pct": 0.85,
+            "rate": 1000000,
+            "tunable": true
+        }
+    ],
+    "trunking": {
+        "module": "tk_p25.py",
+        "chans": [
+            {
+                "#note": "Active site.",
+                "sysname": "Example System - Site A",
+                "nac": "0x123",
+                "control_channel_list": "851.0125,851.5125",
+                "whitelist": "",
+                "tgid_tags_file": "talkgroups_primary.tsv",
+                "rid_tags_file": "",
+                "tdma_cc": false,
+                "crypt_behavior": 1
+            },
+            {
+                "#note": "Neighbor of Site A, same logical system -- not active until switched to.",
+                "sysname": "Example System - Site B",
+                "nac": "0x123",
+                "control_channel_list": "852.0125,852.5125",
+                "whitelist": "",
+                "tgid_tags_file": "talkgroups_primary.tsv",
+                "rid_tags_file": "",
+                "tdma_cc": false,
+                "crypt_behavior": 1
+            },
+            {
+                "#note": "A second, independent logical system with its own talkgroup set and a blacklist.",
+                "sysname": "Secondary System - Site A",
+                "nac": "0x456",
+                "control_channel_list": "854.0125",
+                "whitelist": "",
+                "tgid_tags_file": "talkgroups_secondary.tsv",
+                "rid_tags_file": "",
+                "tdma_cc": false,
+                "crypt_behavior": 1,
+                "blacklist": "blacklist_secondary.tsv"
+            }
+        ]
+    },
+    "terminal": {
+        "module": "terminal.py",
+        "terminal_type": "http:0.0.0.0:8080",
+        "curses_plot_interval": 0.1,
+        "http_plot_interval": 1.0,
+        "http_plot_directory": "../www/images",
+        "tuning_step_large": 1200,
+        "tuning_step_small": 100
+    }
+}

@@ -4,3 +4,15 @@ build/
 
 # Docker streaming MVP - local secrets, never commit real passwords
 .env
+
+# Docker streaming MVP - personal deployment seed data (real system/site/
+# talkgroup info): never commit this, only the *.example templates. Copy an
+# .example file to the bare name to use it, e.g.
+#   cp docker/config/multi_rx.json.example docker/config/multi_rx.json
+docker/config/multi_rx.json
+docker/config/trunk.tsv
+docker/config/talkgroups*.tsv
+docker/config/tg_categories_*.tsv
+docker/config/blacklist_*.tsv
+docker/config/whitelist_*.tsv
+!docker/config/*.example

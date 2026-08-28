@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-# One-time, run-by-hand migration of the current flat-file OP25 config
-# (multi_rx.json + talkgroups*.tsv + blacklist*.tsv) into the SQLite schema
-# defined in schema.sql. Never modifies or deletes the source files.
+# One-time, run-by-hand migration of the flat-file OP25 config (a multi_rx.json
+# plus whatever talkgroups*.tsv/blacklist*.tsv/whitelist*.tsv files it
+# references) into the SQLite schema defined in schema.sql. Never modifies or
+# deletes the source files.
 #
-#   python3 migrate_json_to_sqlite.py --db docker/config/op25.db
+#   cp docker/config/multi_rx.json.example docker/config/multi_rx.json
+#   # ...edit multi_rx.json and its referenced .tsv files with your own
+#   # systems/sites/talkgroups (see the .example files for the expected
+#   # format) -- these are gitignored, so your real data never gets committed...
+#   python3 migrate_json_to_sqlite.py --config docker/config/multi_rx.json --db docker/config/op25.db
 #
+# Every tag_set/access_list this script creates is discovered from the
+# config itself (whatever tgid_tags_file/blacklist/whitelist filenames the
+# chans[] entries actually reference) -- nothing here is tied to any
+# particular set of systems or filenames.
 import argparse
 import csv
 import json
@@ -12,18 +21,18 @@ import os
 import sqlite3
 import sys
 
-# tsv filename (as referenced by tgid_tags_file in multi_rx.json) -> tag_set name
-TAG_SET_FILES = {
-    "talkgroups.tsv": ("nc_viper", "NC VIPER statewide TGID space"),
-    "talkgroups_charlotte_uasi.tsv": ("charlotte_uasi", "Charlotte UASI independent TGID space"),
-}
 
-# tag_set name -> optional tgid->category TSV (RadioReference category names), used to
-# backfill talkgroups.category at import time. Missing file/tgid = category stays NULL.
-CATEGORY_FILES = {
-    "nc_viper": "tg_categories_nc_viper.tsv",
-    "charlotte_uasi": "tg_categories_charlotte_uasi.tsv",
-}
+def tag_set_name_from_filename(filename):
+    # "talkgroups_west_metro.tsv" -> "west_metro", "talkgroups.tsv" -> "talkgroups"
+    # -- just a readable slug; rename via the admin UI's Systems tab afterward
+    # if you want something friendlier.
+    stem = os.path.splitext(filename)[0]
+    prefix = "talkgroups_"
+    return stem[len(prefix):] if stem.startswith(prefix) else stem
+
+
+def category_filename_for(tag_set_name):
+    return f"tg_categories_{tag_set_name}.tsv"
 
 
 def load_category_map(path):
@@ -40,11 +49,6 @@ def load_category_map(path):
             except ValueError:
                 continue
     return mapping
-
-# blacklist/whitelist filename (as referenced by trunking.chans[].blacklist) -> (access_list name, type)
-ACCESS_LIST_FILES = {
-    "blacklist_charlotte_uasi.tsv": ("charlotte_uasi_blacklist", "blacklist"),
-}
 
 
 def load_talkgroups_tsv(path):
@@ -103,6 +107,27 @@ def main():
     with open(args.config, "r", encoding="utf-8-sig") as f:
         cfg = json.load(f)
 
+    chans = list(cfg.get("trunking", {}).get("chans", []))
+
+    # Discover tag_sets and access_lists from whatever the config's own
+    # chans[] entries reference, rather than a hardcoded list of filenames --
+    # this makes the script work for any set of systems, not just whichever
+    # ones it was originally written against.
+    TAG_SET_FILES = {}   # tgid_tags_file -> (tag_set name, description)
+    for chan in chans:
+        filename = chan.get("tgid_tags_file")
+        if filename and filename not in TAG_SET_FILES:
+            name = tag_set_name_from_filename(filename)
+            TAG_SET_FILES[filename] = (name, f"Imported from {filename}")
+
+    ACCESS_LIST_FILES = {}   # filename -> (access_list name, type)
+    for chan in chans:
+        for field, list_type in (("blacklist", "blacklist"), ("whitelist", "whitelist")):
+            filename = chan.get(field)
+            if filename and filename not in ACCESS_LIST_FILES:
+                name = os.path.splitext(filename)[0]
+                ACCESS_LIST_FILES[filename] = (name, list_type)
+
     conn = sqlite3.connect(args.db)
     conn.execute("PRAGMA foreign_keys = ON")
     # WAL is a persistent property of the DB file (survives reconnects from
@@ -124,7 +149,7 @@ def main():
         tag_set_id = cur.lastrowid
         tag_set_ids[filename] = tag_set_id
         rows = load_talkgroups_tsv(path)
-        cat_map = load_category_map(os.path.join(args.tsv_dir, CATEGORY_FILES.get(name, "")))
+        cat_map = load_category_map(os.path.join(args.tsv_dir, category_filename_for(name)))
 
         # Categories are scoped per tag_set (see schema.sql) -- create one row per
         # distinct category name seen for this tag_set, then resolve tgid->category_id.
@@ -161,17 +186,13 @@ def main():
 
     # --- systems + sites ---
     # A "system" groups the chans[] entries that share the same
-    # (tag_set_id, whitelist_id, blacklist_id) triple -- e.g. every NC VIPER
-    # chan shares one tag_set, every Charlotte UASI chan shares another.
-    # No whitelist source file exists today (ACCESS_LIST_FILES only maps a
-    # blacklist), so whitelist_id is always None here -- an accurate
-    # reflection of there being no whitelist data to migrate, not an
-    # omission.
-    chans = list(cfg.get("trunking", {}).get("chans", []))
+    # (tag_set_id, whitelist_id, blacklist_id) triple -- e.g. every site of
+    # one logical network shares a tag_set, another network's sites share a
+    # different one.
     group_to_system_id = {}
     for chan in chans:
         tag_set_id = tag_set_ids.get(chan.get("tgid_tags_file", ""))
-        whitelist_id = None
+        whitelist_id = access_list_ids.get(chan.get("whitelist", ""))
         blacklist_id = access_list_ids.get(chan.get("blacklist", ""))
         key = (tag_set_id, whitelist_id, blacklist_id)
         if key in group_to_system_id:
@@ -194,8 +215,9 @@ def main():
     note_count = 0
     for sort_order, chan in enumerate(chans):
         tag_set_id = tag_set_ids.get(chan.get("tgid_tags_file", ""))
+        whitelist_id = access_list_ids.get(chan.get("whitelist", ""))
         blacklist_id = access_list_ids.get(chan.get("blacklist", ""))
-        system_id = group_to_system_id[(tag_set_id, None, blacklist_id)]
+        system_id = group_to_system_id[(tag_set_id, whitelist_id, blacklist_id)]
         notes = chan.get("#note")
         if notes:
             note_count += 1

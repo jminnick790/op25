@@ -105,12 +105,18 @@ through the admin UI rather than env vars or bind-mounted files.
 Both the `worker` and `server` processes expect `/data/op25.db` to exist
 in the `op25-config-db` named volume. Two ways to get one there:
 
-- **First-time setup**: run `docker/config/migrate_json_to_sqlite.py`
-  against a `multi_rx.json`-style config to seed a fresh DB (see the
-  script's docstring), or just add your first site/talkgroups by hand
-  through the admin UI once it's up (an empty DB is fine to start
+- **First-time setup**: either add your first system/site/talkgroups by
+  hand through the admin UI once it's up (an empty DB is fine to start
   `docker compose up` against -- `op25` will just have nothing to decode
-  until a site + channel exist).
+  until a site + channel exist), or seed a DB from a bulk config in one
+  shot: copy `docker/config/multi_rx.json.example` to `multi_rx.json` in
+  that same directory (and its referenced `.tsv.example` files the same
+  way, e.g. `talkgroups_primary.tsv.example` -> `talkgroups_primary.tsv`),
+  fill in your own systems/sites/talkgroups, then run
+  `docker/config/migrate_json_to_sqlite.py` against it (see the script's
+  docstring). Those real files are gitignored -- only the `.example`
+  templates are tracked -- so your own system/talkgroup data never ends up
+  committed.
 - **Moving from another deployment**: use that deployment's admin UI
   "Export Config" button to download its `op25.db`, then:
   ```
