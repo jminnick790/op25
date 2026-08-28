@@ -7,7 +7,7 @@ body {
     font-size: 0.8rem;
 }
 h1 { font-size: 1rem; margin: 0 0 0.6rem; }
-nav { display: flex; gap: 0.4rem; margin-bottom: 0.6rem; }
+nav { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
 nav button {
     background: #2a2e33; color: #d8dadd; border: 1px solid #3a3f45;
     padding: 0.3rem 0.7rem; border-radius: 5px; cursor: pointer; font-size: 0.78rem;
@@ -15,7 +15,7 @@ nav button {
 nav button.active { background: #3a6df0; border-color: #3a6df0; color: #fff; }
 section { display: none; }
 section.active { display: block; }
-.table-wrap { overflow-x: auto; margin-bottom: 0.5rem; }
+.table-wrap { overflow-x: auto; margin-bottom: 0.5rem; -webkit-overflow-scrolling: touch; }
 table { width: 100%; min-width: 760px; border-collapse: collapse; font-size: 0.76rem; table-layout: fixed; }
 th, td { text-align: left; padding: 0.2rem 0.5rem; border-bottom: 1px solid #2a2e33; }
 th { color: #9aa0a6; font-weight: 600; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.02em; }
@@ -44,7 +44,7 @@ button.action:disabled { opacity: 0.4; cursor: not-allowed; }
 .badge.active { background: #1f4d2e; color: #7ee7a0; }
 .badge.inactive { background: #2a2e33; color: #7a7f85; }
 
-.toolbar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
 .search {
     flex: 1 1 auto; max-width: 22em; background: #2a2e33; color: #d8dadd; border: 1px solid #3a3f45;
     border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.76rem;
@@ -72,3 +72,29 @@ td.drag-handle { color: #6e7480; text-align: center; user-select: none; }
 }
 #toast.error { border-color: #6b2f34; color: #ff9494; }
 select.tgset-picker { margin-bottom: 0.4rem; }
+
+button.action.subtle { background: none; color: #9aa0a6; }
+
+/* ------------------------------------------------------------ responsive --
+   Table data itself stays desktop-shaped (horizontal scroll via
+   .table-wrap, same as always) rather than reflowing into cards -- these
+   rules target the parts of the page that otherwise clip, overflow, or
+   become hard to tap at phone widths: nav/toolbar wrapping (set above,
+   unconditionally), add-row forms, and touch target sizing. */
+@media (max-width: 700px) {
+    body { padding: 0.75rem 0.85rem; }
+    nav button, .toggle-add {
+        padding: 0.4rem 0.7rem; font-size: 0.78rem;
+    }
+    .toolbar { gap: 0.4rem; }
+    .search { flex: 1 1 100%; max-width: none; }
+    .add-row .field { display: block; width: 100%; margin-right: 0; }
+    .add-row .field input,
+    .add-row .field select,
+    .add-row .field textarea {
+        width: 100% !important; box-sizing: border-box;
+    }
+    input, select, textarea { padding: 0.32rem 0.45rem; }
+    button.action { padding: 0.4rem 0.75rem; font-size: 0.76rem; }
+    #toast { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; text-align: center; }
+}

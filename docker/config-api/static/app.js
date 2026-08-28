@@ -58,6 +58,23 @@ function toggleAdd(id) {
     document.getElementById(id).classList.toggle("open");
 }
 
+// Resets every input/select/textarea inside an add-row panel back to its
+// authored default (an <input value="..."> attribute, or a <select>'s first
+// option -- every add-row's first option is "(none)" or the form's own
+// sensible default, e.g. new-list-type's "blacklist"). Called both after a
+// successful create/import (so the form is ready for the next entry without
+// re-typing shared values like NAC) and from an explicit "Clear" button next
+// to each Add/Import button, for resetting mid-entry without submitting.
+function clearFields(containerId) {
+    const el = document.getElementById(containerId);
+    el.querySelectorAll("input, textarea").forEach(inp => {
+        if (inp.type === "file") inp.value = "";
+        else if (inp.type === "checkbox") inp.checked = inp.defaultChecked;
+        else inp.value = inp.defaultValue;
+    });
+    el.querySelectorAll("select").forEach(sel => { sel.selectedIndex = 0; });
+}
+
 function esc(s) {
     const d = document.createElement("div");
     d.textContent = s == null ? "" : String(s);
@@ -283,6 +300,7 @@ async function createSite() {
             notes: document.getElementById("site-notes").value || null,
         });
         toast("Site added");
+        clearFields("site-add");
         loadSites();
     } catch (e) { toast(e.message, true); }
 }
@@ -362,6 +380,7 @@ async function createSystem() {
             notes: document.getElementById("system-notes").value || null,
         });
         toast("System added");
+        clearFields("system-add");
         loadSystems();
     } catch (e) { toast(e.message, true); }
 }
@@ -453,6 +472,7 @@ async function createTalkgroup() {
             priority: document.getElementById("tg-prio").value ? parseInt(document.getElementById("tg-prio").value) : null,
         });
         toast("Talkgroup added");
+        clearFields("tg-add");
         loadTalkgroups();
     } catch (e) { toast(e.message, true); }
 }
@@ -555,6 +575,7 @@ async function createListEntry() {
             tgid_end: end ? parseInt(end) : null,
         });
         toast("Entry added");
+        clearFields("entry-add");
         loadListEntries();
     } catch (e) { toast(e.message, true); }
 }
@@ -572,6 +593,7 @@ async function createAccessList() {
             type: document.getElementById("new-list-type").value,
         });
         toast("List added");
+        clearFields("list-add");
         await loadLookups();
     } catch (e) { toast(e.message, true); }
 }
@@ -645,6 +667,7 @@ async function createDevice() {
             rate: parseInt(document.getElementById("dev-rate").value) || 1000000,
         });
         toast("Device added -- restart op25 to use it");
+        clearFields("dev-add");
         loadDevices();
     } catch (e) { toast(e.message, true); }
 }
@@ -671,6 +694,7 @@ async function createChannel() {
             destination: document.getElementById("chan-destination").value,
         });
         toast("Channel added -- restart op25 to use it");
+        clearFields("chan-add");
         loadDevices();
     } catch (e) { toast(e.message, true); }
 }

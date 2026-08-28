@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OP25 Config</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -29,7 +30,7 @@
     <div class="field"><label>Whitelist</label><select id="system-whitelist"></select></div>
     <div class="field"><label>Blacklist</label><select id="system-blacklist"></select></div>
     <div class="field"><label>Notes</label><input id="system-notes" style="width:16em"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSystem()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSystem()">Add</button><button class="action subtle" onclick="clearFields('system-add')">Clear</button></div>
   </div>
   <p class="hint">A system is a logical network (e.g. "NC VIPER") that several sites on the Sites tab can belong to. The talkgroup tag set and white/blacklist apply here, once, to every site of the system.</p>
   <div class="table-wrap">
@@ -53,7 +54,7 @@
     <div class="field"><label>Control Channel List</label><input id="site-ccl" style="width:18em"></div>
     <div class="field"><label>System</label><select id="site-system"></select></div>
     <div class="field"><label>Notes</label><input id="site-notes" style="width:16em"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSite()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSite()">Add</button><button class="action subtle" onclick="clearFields('site-add')">Clear</button></div>
   </div>
   <div class="add-row" id="site-import">
     <p class="hint" style="margin-top:0">
@@ -65,7 +66,7 @@
     </p>
     <div class="field"><input type="file" id="site-import-file" accept=".csv,.tsv,.txt" onchange="readFileIntoTextarea(this, 'site-import-text')"></div>
     <div class="field" style="display:block;width:100%"><textarea id="site-import-text" rows="6" style="width:100%;box-sizing:border-box" placeholder="sysname&#9;nac&#9;control_channel_list&#9;system&#10;My New Site&#9;0x1a2&#9;851.0125,851.5125&#9;NC VIPER"></textarea></div>
-    <div class="field" style="margin-top:0.5rem"><button class="action primary" onclick="importSites()">Import</button></div>
+    <div class="field" style="margin-top:0.5rem"><button class="action primary" onclick="importSites()">Import</button><button class="action subtle" onclick="clearFields('site-import'); renderBulkImportErrors('site-import-errors', [])">Clear</button></div>
     <div class="field import-errors" id="site-import-errors"></div>
   </div>
   <p class="hint">Drag rows by the handle to reorder.</p>
@@ -95,7 +96,7 @@
     <div class="field"><label>Name</label><input id="tg-name" style="width:18em"></div>
     <div class="field"><label>Group</label><select id="tg-category"></select></div>
     <div class="field"><label>Priority</label><input id="tg-prio" type="number" style="width:5em"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createTalkgroup()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createTalkgroup()">Add</button><button class="action subtle" onclick="clearFields('tg-add')">Clear</button></div>
   </div>
   <div class="add-row" id="tg-import">
     <p class="hint" style="margin-top:0">
@@ -107,7 +108,7 @@
     </p>
     <div class="field"><input type="file" id="tg-import-file" accept=".csv,.tsv,.txt" onchange="readFileIntoTextarea(this, 'tg-import-text')"></div>
     <div class="field" style="display:block;width:100%"><textarea id="tg-import-text" rows="6" style="width:100%;box-sizing:border-box" placeholder="tgid&#9;name&#9;group&#9;priority&#10;52101&#9;PD Dispatch&#9;Police&#9;1"></textarea></div>
-    <div class="field" style="margin-top:0.5rem"><button class="action primary" onclick="importTalkgroups()">Import</button></div>
+    <div class="field" style="margin-top:0.5rem"><button class="action primary" onclick="importTalkgroups()">Import</button><button class="action subtle" onclick="clearFields('tg-import'); renderBulkImportErrors('tg-import-errors', [])">Clear</button></div>
     <div class="field import-errors" id="tg-import-errors"></div>
   </div>
   <div class="add-row" id="cat-manage">
@@ -120,7 +121,7 @@
     </table>
     </div>
     <div class="field"><label>New Group Name</label><input id="new-cat-name" style="width:16em"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createCategory()">Add Group</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createCategory()">Add Group</button><button class="action subtle" onclick="document.getElementById('new-cat-name').value=''">Clear</button></div>
   </div>
   <div class="table-wrap">
   <table id="talkgroups-table">
@@ -146,14 +147,14 @@
   <div class="add-row" id="entry-add">
     <div class="field"><label>TGID</label><input id="entry-tgid" type="number" style="width:7em"></div>
     <div class="field"><label>TGID End (range, optional)</label><input id="entry-tgid-end" type="number" style="width:7em"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createListEntry()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createListEntry()">Add</button><button class="action subtle" onclick="clearFields('entry-add')">Clear</button></div>
   </div>
   <div class="add-row" id="list-add">
     <div class="field"><label>New List Name</label><input id="new-list-name" style="width:14em"></div>
     <div class="field"><label>Type</label>
       <select id="new-list-type"><option value="blacklist">blacklist</option><option value="whitelist">whitelist</option></select>
     </div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createAccessList()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createAccessList()">Add</button><button class="action subtle" onclick="clearFields('list-add')">Clear</button></div>
   </div>
   <div class="table-wrap">
   <table id="lists-table">
@@ -174,7 +175,7 @@
     <div class="field"><label>Gains</label><input id="dev-gains" style="width:8em"></div>
     <div class="field"><label>PPM</label><input id="dev-ppm" type="number" style="width:5em" value="0"></div>
     <div class="field"><label>Rate</label><input id="dev-rate" type="number" style="width:8em" value="1000000"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createDevice()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createDevice()">Add</button><button class="action subtle" onclick="clearFields('dev-add')">Clear</button></div>
   </div>
   <p class="hint">Devices are the physical SDR hardware. Changing these always requires an op25 restart.</p>
   <div class="table-wrap">
@@ -193,7 +194,7 @@
     <div class="field"><label>Device</label><select id="chan-device"></select></div>
     <div class="field"><label>Site</label><select id="chan-site"></select></div>
     <div class="field"><label>Destination</label><input id="chan-destination" style="width:18em" value="ws://0.0.0.0:8081"></div>
-    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createChannel()">Add</button></div>
+    <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createChannel()">Add</button><button class="action subtle" onclick="clearFields('chan-add')">Clear</button></div>
   </div>
   <p class="hint">Channels bind one device to one active site. Also always requires a restart -- use "Set Active" on the Sites tab for the common case of switching which site a channel points at.</p>
   <div class="table-wrap">
