@@ -75,6 +75,19 @@ function clearFields(containerId) {
     el.querySelectorAll("select").forEach(sel => { sel.selectedIndex = 0; });
 }
 
+// Mobile-only: a "card-collapsible" row (see the @media (max-width: 700px)
+// block in style.css) shows just its .card-summary cells until tapped, then
+// expands to show every field -- avoids scrolling past 6-9 stacked fields
+// per row just to glance at a long list. Has zero effect on desktop, where
+// the CSS never hides anything to begin with, so this listener is attached
+// unconditionally rather than gated on viewport width. Ignores clicks that
+// land on an actual form control so tapping into an editable summary field
+// (e.g. Site Name) still just edits it instead of also collapsing the card.
+function toggleCard(e, tr) {
+    if (e.target.closest("input, select, textarea, button, a")) return;
+    tr.classList.toggle("expanded");
+}
+
 function esc(s) {
     const d = document.createElement("div");
     d.textContent = s == null ? "" : String(s);
@@ -215,21 +228,23 @@ async function loadSites() {
         const tr = document.createElement("tr");
         tr.draggable = true;
         tr.dataset.id = s.id;
+        tr.className = "card-collapsible";
         tr.innerHTML = `
           <td class="drag-handle">&#8942;&#8942;</td>
-          <td data-label="Site Name"><input value="${esc(s.sysname)}" onchange="updateSite(${s.id}, {sysname: this.value})" style="width:95%"></td>
+          <td class="card-summary" data-label="Site Name"><input value="${esc(s.sysname)}" onchange="updateSite(${s.id}, {sysname: this.value})" style="width:95%"></td>
           <td data-label="NAC"><input value="${esc(s.nac)}" onchange="updateSite(${s.id}, {nac: this.value})" style="width:5em"></td>
           <td data-label="RFID"><input type="number" value="${s.rfid ?? ""}" onchange="updateSite(${s.id}, {rfid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
           <td data-label="STID"><input type="number" value="${s.stid ?? ""}" onchange="updateSite(${s.id}, {stid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
           <td data-label="Control Channels"><input value="${esc(s.control_channel_list)}" onchange="updateSite(${s.id}, {control_channel_list: this.value})" style="width:95%"></td>
           <td data-label="System"><select onchange="updateSite(${s.id}, {system_id: this.value ? parseInt(this.value) : null})">${systemOptions(s.system_id)}</select></td>
-          <td data-label="Active"><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
+          <td class="card-summary" data-label="Active"><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
           <td data-label="Notes"><input value="${esc(s.notes) || ""}" onchange="updateSite(${s.id}, {notes: this.value})" style="width:95%"></td>
           <td class="row-actions">
             <button class="action" ${s.active ? "" : "disabled title=\"only the active site's reload can be applied live\""} onclick="applyReload(${s.id})">Apply</button>
             <button class="action" onclick="activateSite(${s.id})">Set Active</button>
             <button class="action danger" onclick="deleteSite(${s.id})">Delete</button>
           </td>`;
+        tr.addEventListener("click", (e) => toggleCard(e, tr));
         tbody.appendChild(tr);
     }
     initSitesDragReorder(tbody);
@@ -349,18 +364,20 @@ async function loadSystems() {
     tbody.innerHTML = "";
     for (const sy of systems) {
         const tr = document.createElement("tr");
+        tr.className = "card-collapsible";
         tr.innerHTML = `
-          <td data-label="Name"><input value="${esc(sy.name)}" onchange="updateSystem(${sy.id}, {name: this.value})" style="width:95%"></td>
+          <td class="card-summary" data-label="Name"><input value="${esc(sy.name)}" onchange="updateSystem(${sy.id}, {name: this.value})" style="width:95%"></td>
           <td data-label="Tag Set"><select onchange="updateSystem(${sy.id}, {tag_set_id: this.value ? parseInt(this.value) : null})">${tagsetOptions(sy.tag_set_id)}</select></td>
           <td data-label="Whitelist"><select onchange="updateSystem(${sy.id}, {whitelist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("whitelist", sy.whitelist_id)}</select></td>
           <td data-label="Blacklist"><select onchange="updateSystem(${sy.id}, {blacklist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("blacklist", sy.blacklist_id)}</select></td>
           <td data-label="Notes"><input value="${esc(sy.notes) || ""}" onchange="updateSystem(${sy.id}, {notes: this.value})" style="width:95%"></td>
-          <td data-label="Roaming" style="text-align:center;" title="Automatic handoff to a neighbor site (within this system) when the active site's signal degrades -- needs a dedicated 'scout' channel configured on a second tuner.">
+          <td class="card-summary" data-label="Roaming" style="text-align:center;" title="Automatic handoff to a neighbor site (within this system) when the active site's signal degrades -- needs a dedicated 'scout' channel configured on a second tuner.">
             <input type="checkbox" ${sy.roaming_enabled ? "checked" : ""} onchange="updateSystem(${sy.id}, {roaming_enabled: this.checked})">
           </td>
           <td data-label="Stale (s)"><input type="number" min="1" placeholder="10" value="${sy.roaming_stale_seconds ?? ""}" style="width:60px"
                 onchange="updateSystem(${sy.id}, {roaming_stale_seconds: this.value ? parseInt(this.value) : null})"></td>
           <td class="row-actions"><button class="action danger" onclick="deleteSystem(${sy.id})">Delete</button></td>`;
+        tr.addEventListener("click", (e) => toggleCard(e, tr));
         tbody.appendChild(tr);
     }
 }
@@ -437,12 +454,14 @@ async function loadTalkgroups() {
     tbody.innerHTML = "";
     for (const tg of tgs) {
         const tr = document.createElement("tr");
+        tr.className = "card-collapsible";
         tr.innerHTML = `
-          <td class="mono" data-label="TGID">${tg.tgid}</td>
-          <td data-label="Name"><input value="${esc(tg.name)}" onchange="updateTalkgroup(${tg.id}, {name: this.value})" style="width:95%"></td>
+          <td class="mono card-summary" data-label="TGID">${tg.tgid}</td>
+          <td class="card-summary" data-label="Name"><input value="${esc(tg.name)}" onchange="updateTalkgroup(${tg.id}, {name: this.value})" style="width:95%"></td>
           <td data-label="Group"><select onchange="onCategorySelectChange(this, ${tg.id})">${categorySelectOptions(tg.category_id)}</select></td>
           <td data-label="Priority"><input value="${tg.priority ?? ""}" onchange="updateTalkgroup(${tg.id}, {priority: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
           <td class="row-actions"><button class="action danger" onclick="deleteTalkgroup(${tg.id})">Delete</button></td>`;
+        tr.addEventListener("click", (e) => toggleCard(e, tr));
         tbody.appendChild(tr);
     }
 }
@@ -609,8 +628,9 @@ async function loadDevices() {
     devTbody.innerHTML = "";
     for (const d of devices) {
         const tr = document.createElement("tr");
+        tr.className = "card-collapsible";
         tr.innerHTML = `
-          <td data-label="Name"><input value="${esc(d.name)}" onchange="updateDevice(${d.id}, {name: this.value})" style="width:95%"></td>
+          <td class="card-summary" data-label="Name"><input value="${esc(d.name)}" onchange="updateDevice(${d.id}, {name: this.value})" style="width:95%"></td>
           <td data-label="Args"><input value="${esc(d.args)}" onchange="updateDevice(${d.id}, {args: this.value})" style="width:95%"></td>
           <td data-label="Gains"><input value="${esc(d.gains)}" onchange="updateDevice(${d.id}, {gains: this.value})" style="width:95%"></td>
           <td data-label="PPM"><input value="${d.ppm}" type="number" onchange="updateDevice(${d.id}, {ppm: parseInt(this.value)})" style="width:4em"></td>
@@ -618,6 +638,7 @@ async function loadDevices() {
           <td data-label="Usable BW%"><input value="${d.usable_bw_pct}" type="number" step="0.01" onchange="updateDevice(${d.id}, {usable_bw_pct: parseFloat(this.value)})" style="width:4em"></td>
           <td data-label="Tunable"><input type="checkbox" ${d.tunable ? "checked" : ""} onchange="updateDevice(${d.id}, {tunable: this.checked})"></td>
           <td class="row-actions"><button class="action danger" onclick="deleteDevice(${d.id})">Delete</button></td>`;
+        tr.addEventListener("click", (e) => toggleCard(e, tr));
         devTbody.appendChild(tr);
     }
 
@@ -640,10 +661,11 @@ async function loadDevices() {
     for (const c of channels) {
         const isScout = c.role === "scout";
         const tr = document.createElement("tr");
+        tr.className = "card-collapsible";
         tr.innerHTML = `
-          <td data-label="Name"><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
+          <td class="card-summary" data-label="Name"><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
           <td data-label="Device"><select onchange="updateChannel(${c.id}, {device_id: parseInt(this.value)})">${deviceOptions(c.device_id)}</select></td>
-          <td data-label="Role" title="'scout' is roaming's dedicated neighbor-evaluation receiver -- never voice-eligible, never has a fixed site (the roaming coordinator points it dynamically).">
+          <td class="card-summary" data-label="Role" title="'scout' is roaming's dedicated neighbor-evaluation receiver -- never voice-eligible, never has a fixed site (the roaming coordinator points it dynamically).">
             <select onchange="updateChannel(${c.id}, {role: this.value})">${roleOptions(c.role)}</select>
           </td>
           <td data-label="Site" style="${isScout ? "opacity:0.5;" : ""}" title="${isScout ? "Ignored for a scout channel -- its target is set dynamically by the roaming coordinator." : ""}">
@@ -653,6 +675,7 @@ async function loadDevices() {
           <td data-label="Destination"><input value="${esc(c.destination)}" onchange="updateChannel(${c.id}, {destination: this.value})" style="width:95%"></td>
           <td data-label="Analog"><input value="${esc(c.enable_analog)}" onchange="updateChannel(${c.id}, {enable_analog: this.value})" style="width:4em"></td>
           <td class="row-actions"><button class="action danger" onclick="deleteChannel(${c.id})">Delete</button></td>`;
+        tr.addEventListener("click", (e) => toggleCard(e, tr));
         chanTbody.appendChild(tr);
     }
 }

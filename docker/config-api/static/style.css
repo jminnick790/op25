@@ -141,4 +141,22 @@ button.action.subtle { background: none; color: #9aa0a6; }
         padding-top: 0.5rem; border-bottom: none;
     }
     td.row-actions button.action { margin-right: 0; }
+
+    /* Collapsed by default: a card-collapsible row shows only its
+       .card-summary cell(s) (plus the drag handle, which is exempt since it
+       has no label anyway) -- everything else, including the action
+       buttons, only appears once tapped open. A chevron on the row itself
+       (not a separate element -- keeps app.js from needing to add one to
+       every table) signals there's more to see. */
+    tr.card-collapsible { position: relative; cursor: pointer; padding-right: 1.6rem; }
+    tr.card-collapsible::after {
+        content: "\25BE"; position: absolute; top: 0.55rem; right: 0.6rem;
+        color: #6e7480; font-size: 0.7rem; transition: transform 0.15s ease;
+    }
+    tr.card-collapsible.expanded::after { transform: rotate(-180deg); }
+    tr.card-collapsible > td:not(.card-summary):not(.drag-handle) { display: none; }
+    tr.card-collapsible.expanded > td:not(.card-summary):not(.drag-handle) { display: flex; }
+    td.card-summary { font-weight: 600; }
+    td.card-summary::before { font-weight: 400; }
+    tr.card-collapsible:not(.expanded) > td.card-summary:last-of-type { border-bottom: none; }
 }
