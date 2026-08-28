@@ -2698,6 +2698,7 @@ class p25_receiver(object):
         if self.system is not None:
             self.system.release_cc(self.msgq_id)
         self.system = new_system
+        self.config['trunking_sysname'] = new_system.sysname  # get_status() reads this, not self.system, for the displayed system name
         self.talkgroups = new_system.get_talkgroups()
         self.crypt_behavior = new_system.get_crypt_behavior()
         self.fa_ctrl({'tuner': self.msgq_id, 'cmd': 'crypt_behavior', 'behavior': self.crypt_behavior})

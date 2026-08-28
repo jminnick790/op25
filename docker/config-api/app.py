@@ -1212,6 +1212,73 @@ def _ensure_talkgroup_placeholder(conn, tag_set_id, tgid):
     )
 
 
+def _hz_to_cc_freq_str(hz):
+    # sites.control_channel_list is parsed by op25's own get_frequency()
+    # (helper_funcs.py): a '.' present means MHz-decimal, absent means raw
+    # Hz -- so the formatted string MUST retain a '.' or a value like
+    # "851000000" would be mistaken for 851 kHz instead of 851 MHz.
+    s = f"{hz / 1000000.0:.6f}".rstrip('0').rstrip('.')
+    return s if '.' in s else s + '.0'
+
+
+def _ensure_neighbor_site_placeholder(conn, observing_site, system_name, rfid, stid, freq_hz):
+    # Auto-create a sites row for a neighbor observed via adj_sts_bcst that
+    # doesn't match any site already known for this system -- so a genuinely
+    # new site becomes visible (and, after a worker restart rebuilds
+    # rx_ctl's neighbor_map, usable as a roaming candidate) without an admin
+    # having to notice it in the logs and hand-enter it first. Mirrors
+    # _ensure_talkgroup_placeholder's reasoning for the identical problem.
+    #
+    # Deliberately conservative about WHEN to create: if this system already
+    # has any site with rfid/stid still NULL, that site could plausibly BE
+    # this exact neighbor -- rfid/stid only self-populate once a site is
+    # actually activated/scouted (see schema.sql's sites.stid comment), so a
+    # manually pre-configured-but-never-yet-observed site looks identical to
+    # "unknown" from here. Creating a new row in that case risks a permanent
+    # duplicate the admin then has to notice and clean up by hand, which is
+    # worse than just waiting -- either self-population or a manual edit
+    # will resolve the ambiguity on its own. Skip only in that ambiguous
+    # case; a system whose configured sites all have known identities is
+    # unambiguous, and this is exactly the "drove into range of a new site"
+    # case roaming needs to discover automatically.
+    system_id = observing_site["system_id"]
+    if system_id is None or not rfid or not stid:
+        return
+    if conn.execute(
+        "SELECT 1 FROM sites WHERE system_id=? AND rfid=? AND stid=?", (system_id, rfid, stid)
+    ).fetchone() is not None:
+        return
+    if conn.execute(
+        "SELECT 1 FROM sites WHERE system_id=? AND (rfid IS NULL OR stid IS NULL) LIMIT 1", (system_id,)
+    ).fetchone() is not None:
+        return
+    # nac/tdma_cc/crypt_behavior aren't carried in adj_sts_bcst itself --
+    # inherited from the observing site as the best available default (most
+    # P25 networks share these across all sites of one system, which is the
+    # same assumption roaming's own system_id-scoped neighbor matching
+    # already relies on) -- noted in the placeholder's own notes field so
+    # it's not silently trusted as verified.
+    try:
+        conn.execute(
+            """INSERT INTO sites
+               (system_id, sysname, nac, control_channel_list, tdma_cc, crypt_behavior, rfid, stid, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (system_id, f"{system_name} - Unconfigured site ({rfid}-{stid})",
+             observing_site["nac"], _hz_to_cc_freq_str(freq_hz),
+             observing_site["tdma_cc"], observing_site["crypt_behavior"], rfid, stid,
+             f"Auto-added: observed as a neighbor of {observing_site['sysname']} but never seen directly. "
+             "nac/tdma_cc/crypt_behavior are copied from that site as a best guess, not confirmed for this "
+             "one -- verify and rename before relying on it. Requires a worker restart before it's usable "
+             "as a roaming candidate."),
+        )
+        sys.stderr.write(
+            f"persist_state: auto-added neighbor site '{system_name} - Unconfigured site ({rfid}-{stid})' "
+            f"(system_id={system_id}, rfid={rfid}, stid={stid}), observed via {observing_site['sysname']}\n"
+        )
+    except sqlite3.IntegrityError as e:
+        sys.stderr.write(f"persist_state: auto-add neighbor site skipped (sysname collision?): {e}\n")
+
+
 def persist_state(conn, responses, should_persist_trunk=True):
     # should_persist_trunk gates the continuous, high-frequency writes
     # (trunk_update/call_log-derived -- subscriber_registrations,
@@ -1244,7 +1311,8 @@ def persist_state(conn, responses, should_persist_trunk=True):
         sites_by_name = {
             row["sysname"]: row
             for row in conn.execute(
-                "SELECT s.id, s.sysname, s.rfid, s.stid, sy.tag_set_id "
+                "SELECT s.id, s.sysname, s.system_id, s.rfid, s.stid, s.nac, s.tdma_cc, s.crypt_behavior, "
+                "sy.tag_set_id, sy.name AS system_name "
                 "FROM sites s LEFT JOIN systems sy ON s.system_id = sy.id"
             )
         }
@@ -1295,6 +1363,13 @@ def persist_state(conn, responses, should_persist_trunk=True):
                      entry.get("table"), entry.get("conventional"), entry.get("valid"), entry.get("active"),
                      _epoch_to_iso(time.time())),
                 )
+                # Not gated on roaming_enabled -- this is topology discovery,
+                # independently useful even on a system with roaming off
+                # (see _ensure_neighbor_site_placeholder for why/when).
+                if entry.get("valid"):
+                    _ensure_neighbor_site_placeholder(
+                        conn, site_row, site_row["system_name"], entry.get("rfid"), entry.get("stid"), int(freq)
+                    )
 
     if should_persist_trunk and active_channels and active_channels.get("primary_system"):
         # Best-effort DB write-back after a successful roam, so a restart
