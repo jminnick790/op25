@@ -841,13 +841,25 @@ class p25_system(object):
 
         self.crypt_behavior = int(from_dict(self.config, 'crypt_behavior', 1))
 
+        # Every configured site gets a p25_system at startup regardless of
+        # whether it's ever been active (see db_config.build_config_from_db())
+        # -- including a bulk-imported placeholder created with just a name/
+        # rfid/stid, frequency intentionally left for roaming's neighbor
+        # auto-discovery to fill in later (see app.py's
+        # _ensure_neighbor_site_placeholder()). That used to be fatal for the
+        # WHOLE process (sys.exit(1) here) the moment any one site had no
+        # frequency yet -- not just that site failing to come up. Now it's
+        # just inert: cc_list stays empty, get_cc()/to_json() below both
+        # guard against that instead of indexing into it, and this system
+        # simply never offers a CC to tune until a frequency arrives (either
+        # a human fills it in, or a neighbor observation backfills it).
         cc_list = from_dict(self.config, 'control_channel_list', "")
         if cc_list == "":
-            sys.stderr.write("Aborting. P25 Trunking 'control_channel_list' parameter is empty or not found\n")
-            sys.exit(1)
-
-        for f in cc_list.split(','):
-            self.cc_list.append(get_frequency(f))
+            sys.stderr.write("%s [%s] WARNING: no control_channel_list configured yet -- "
+                              "this site won't be tunable until one is set\n" % (log_ts.get(), self.sysname))
+        else:
+            for f in cc_list.split(','):
+                self.cc_list.append(get_frequency(f))
         self.next_cc()
 
     def reload_from_db(self):
@@ -983,6 +995,8 @@ class p25_system(object):
             return None
 
         if (self.cc_msgq_id is None) or (msgq_id == self.cc_msgq_id):
+            if not self.cc_list:   # no control_channel_list yet -- see __init__'s comment
+                return None
             self.cc_msgq_id = msgq_id
             if self.debug > 10:
                 sys.stderr.write("%s [%s] Assigning control channel to receiver[%d]\n" % (log_ts.get(), self.sysname, msgq_id))
@@ -2314,7 +2328,8 @@ class p25_system(object):
         d['top_line']      += '  System %s' % (wacn_system_id_str)
         d['top_line']      += '  Site %s' % (rfss_site_id_str)
         d['top_line']      += '  NAC %3X' % (self.nac)
-        d['top_line']      += '  CC %f' % ((self.rfss_chan if self.rfss_chan is not None else self.cc_list[self.cc_index]) / 1e6)
+        cc_freq = self.rfss_chan if self.rfss_chan is not None else (self.cc_list[self.cc_index] if self.cc_list else None)
+        d['top_line']      += '  CC %f' % (cc_freq / 1e6) if cc_freq is not None else '  CC unknown'
         d['top_line']      += '  tsbks %d' % (self.stats['tsbk_count'])
         d['callsign']       = self.callsign
         d['nac']            = self.nac

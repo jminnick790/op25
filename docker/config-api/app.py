@@ -1350,6 +1350,9 @@ def _ensure_neighbor_site_placeholder(conn, observing_site, system_name, rfid, s
     # rx_ctl's neighbor_map, usable as a roaming candidate) without an admin
     # having to notice it in the logs and hand-enter it first. Mirrors
     # _ensure_talkgroup_placeholder's reasoning for the identical problem.
+    # Also backfills control_channel_list on an EXISTING match if it's still
+    # blank -- the intended path for a site that was deliberately bulk
+    # imported with just name/rfid/stid, frequency to follow once observed.
     #
     # Deliberately conservative about WHEN to create: if this system already
     # has any site with rfid/stid still NULL, that site could plausibly BE
@@ -1366,9 +1369,28 @@ def _ensure_neighbor_site_placeholder(conn, observing_site, system_name, rfid, s
     system_id = observing_site["system_id"]
     if system_id is None or not rfid or not stid:
         return
-    if conn.execute(
-        "SELECT 1 FROM sites WHERE system_id=? AND rfid=? AND stid=?", (system_id, rfid, stid)
-    ).fetchone() is not None:
+    existing = conn.execute(
+        "SELECT id, control_channel_list FROM sites WHERE system_id=? AND rfid=? AND stid=?",
+        (system_id, rfid, stid),
+    ).fetchone()
+    if existing is not None:
+        # Backfills a site that was deliberately created with just a name/
+        # rfid/stid (e.g. a bulk import) and no frequency yet -- tk_p25.py's
+        # p25_system now tolerates that at startup (stays inert instead of
+        # aborting) specifically so this can catch up later once the real
+        # site is actually heard, here, as someone else's neighbor. Only
+        # fills a genuinely empty value -- never overwrites a frequency a
+        # human already entered or that a prior observation already set.
+        if not (existing["control_channel_list"] or "").strip():
+            conn.execute(
+                "UPDATE sites SET control_channel_list=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+                (_hz_to_cc_freq_str(freq_hz), existing["id"]),
+            )
+            sys.stderr.write(
+                f"persist_state: backfilled control_channel_list for site id={existing['id']} "
+                f"(system_id={system_id}, rfid={rfid}, stid={stid}) from a neighbor observation via "
+                f"{observing_site['sysname']}\n"
+            )
         return
     if conn.execute(
         "SELECT 1 FROM sites WHERE system_id=? AND (rfid IS NULL OR stid IS NULL) LIMIT 1", (system_id,)
