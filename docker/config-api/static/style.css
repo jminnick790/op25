@@ -76,11 +76,18 @@ select.tgset-picker { margin-bottom: 0.4rem; }
 button.action.subtle { background: none; color: #9aa0a6; }
 
 /* ------------------------------------------------------------ responsive --
-   Table data itself stays desktop-shaped (horizontal scroll via
-   .table-wrap, same as always) rather than reflowing into cards -- these
-   rules target the parts of the page that otherwise clip, overflow, or
-   become hard to tap at phone widths: nav/toolbar wrapping (set above,
-   unconditionally), add-row forms, and touch target sizing. */
+   Below 700px, every data table reflows from a grid into a stack of cards
+   (one per row) instead of staying desktop-shaped and horizontally
+   scrolling -- a 9-column table squeezed sideways on a 375px phone was
+   still unreadable even after the earlier wrapping/touch-target pass.
+   Each <td> carries a data-label (set in app.js) that becomes a visible
+   label via ::before, so "Site Name: NC VIPER - ..." reads the same
+   information a column header would on desktop. Cells with nothing worth
+   labeling (the drag handle, the actions column) opt out via their own
+   class instead. This only changes layout -- every input/select/button
+   inside a cell is the exact same element with the exact same onchange/
+   onclick handler as desktop, so no JS changes were needed beyond adding
+   the data-label/class markers themselves. */
 @media (max-width: 700px) {
     body { padding: 0.75rem 0.85rem; }
     nav button, .toggle-add {
@@ -97,4 +104,41 @@ button.action.subtle { background: none; color: #9aa0a6; }
     input, select, textarea { padding: 0.32rem 0.45rem; }
     button.action { padding: 0.4rem 0.75rem; font-size: 0.76rem; }
     #toast { left: 0.75rem; right: 0.75rem; bottom: 0.75rem; text-align: center; }
+
+    .table-wrap { overflow-x: visible; }
+    table { min-width: 0; table-layout: auto; }
+    thead { display: none; }
+    table, tbody, tr, td { display: block; width: auto; }
+    tr {
+        margin-bottom: 0.6rem; padding: 0.3rem 0.6rem;
+        background: #1e2226; border: 1px solid #2a2e33; border-radius: 8px;
+    }
+    tr:hover { background: #1e2226; }
+    tr.drag-over { border-top-color: #3a6df0; }
+    td {
+        display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+        padding: 0.45rem 0; border-bottom: 1px solid #262a2f;
+    }
+    tr > td:last-child { border-bottom: none; }
+    td[data-label]::before {
+        content: attr(data-label);
+        flex: 0 0 auto; color: #9aa0a6; font-size: 0.66rem;
+        text-transform: uppercase; letter-spacing: 0.02em;
+    }
+    /* The value side (input/select/text) can now flex-grow to use the
+       space the label doesn't need, instead of the desktop ~95%/fixed-em
+       widths sized for a column, not a card. */
+    td[data-label] > input, td[data-label] > select { flex: 1 1 auto; min-width: 0; width: auto !important; }
+    td.truncate { max-width: none; overflow: visible; text-overflow: clip; white-space: normal; text-align: right; }
+
+    /* Cells that don't carry a label read better left-aligned / full-width
+       than squeezed against an empty ::before. */
+    td.drag-handle {
+        display: block; text-align: left; padding: 0 0 0.3rem; border-bottom: none; color: #4a5058;
+    }
+    td.row-actions {
+        display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.3rem;
+        padding-top: 0.5rem; border-bottom: none;
+    }
+    td.row-actions button.action { margin-right: 0; }
 }

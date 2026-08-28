@@ -217,15 +217,15 @@ async function loadSites() {
         tr.dataset.id = s.id;
         tr.innerHTML = `
           <td class="drag-handle">&#8942;&#8942;</td>
-          <td><input value="${esc(s.sysname)}" onchange="updateSite(${s.id}, {sysname: this.value})" style="width:95%"></td>
-          <td><input value="${esc(s.nac)}" onchange="updateSite(${s.id}, {nac: this.value})" style="width:5em"></td>
-          <td><input type="number" value="${s.rfid ?? ""}" onchange="updateSite(${s.id}, {rfid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
-          <td><input type="number" value="${s.stid ?? ""}" onchange="updateSite(${s.id}, {stid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
-          <td><input value="${esc(s.control_channel_list)}" onchange="updateSite(${s.id}, {control_channel_list: this.value})" style="width:95%"></td>
-          <td><select onchange="updateSite(${s.id}, {system_id: this.value ? parseInt(this.value) : null})">${systemOptions(s.system_id)}</select></td>
-          <td><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
-          <td><input value="${esc(s.notes) || ""}" onchange="updateSite(${s.id}, {notes: this.value})" style="width:95%"></td>
-          <td>
+          <td data-label="Site Name"><input value="${esc(s.sysname)}" onchange="updateSite(${s.id}, {sysname: this.value})" style="width:95%"></td>
+          <td data-label="NAC"><input value="${esc(s.nac)}" onchange="updateSite(${s.id}, {nac: this.value})" style="width:5em"></td>
+          <td data-label="RFID"><input type="number" value="${s.rfid ?? ""}" onchange="updateSite(${s.id}, {rfid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
+          <td data-label="STID"><input type="number" value="${s.stid ?? ""}" onchange="updateSite(${s.id}, {stid: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
+          <td data-label="Control Channels"><input value="${esc(s.control_channel_list)}" onchange="updateSite(${s.id}, {control_channel_list: this.value})" style="width:95%"></td>
+          <td data-label="System"><select onchange="updateSite(${s.id}, {system_id: this.value ? parseInt(this.value) : null})">${systemOptions(s.system_id)}</select></td>
+          <td data-label="Active"><span class="badge ${s.active ? "active" : "inactive"}">${s.active ? "active" : "inactive"}</span></td>
+          <td data-label="Notes"><input value="${esc(s.notes) || ""}" onchange="updateSite(${s.id}, {notes: this.value})" style="width:95%"></td>
+          <td class="row-actions">
             <button class="action" ${s.active ? "" : "disabled title=\"only the active site's reload can be applied live\""} onclick="applyReload(${s.id})">Apply</button>
             <button class="action" onclick="activateSite(${s.id})">Set Active</button>
             <button class="action danger" onclick="deleteSite(${s.id})">Delete</button>
@@ -350,17 +350,17 @@ async function loadSystems() {
     for (const sy of systems) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><input value="${esc(sy.name)}" onchange="updateSystem(${sy.id}, {name: this.value})" style="width:95%"></td>
-          <td><select onchange="updateSystem(${sy.id}, {tag_set_id: this.value ? parseInt(this.value) : null})">${tagsetOptions(sy.tag_set_id)}</select></td>
-          <td><select onchange="updateSystem(${sy.id}, {whitelist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("whitelist", sy.whitelist_id)}</select></td>
-          <td><select onchange="updateSystem(${sy.id}, {blacklist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("blacklist", sy.blacklist_id)}</select></td>
-          <td><input value="${esc(sy.notes) || ""}" onchange="updateSystem(${sy.id}, {notes: this.value})" style="width:95%"></td>
-          <td style="text-align:center;" title="Automatic handoff to a neighbor site (within this system) when the active site's signal degrades -- needs a dedicated 'scout' channel configured on a second tuner.">
+          <td data-label="Name"><input value="${esc(sy.name)}" onchange="updateSystem(${sy.id}, {name: this.value})" style="width:95%"></td>
+          <td data-label="Tag Set"><select onchange="updateSystem(${sy.id}, {tag_set_id: this.value ? parseInt(this.value) : null})">${tagsetOptions(sy.tag_set_id)}</select></td>
+          <td data-label="Whitelist"><select onchange="updateSystem(${sy.id}, {whitelist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("whitelist", sy.whitelist_id)}</select></td>
+          <td data-label="Blacklist"><select onchange="updateSystem(${sy.id}, {blacklist_id: this.value ? parseInt(this.value) : null})">${accessListOptions("blacklist", sy.blacklist_id)}</select></td>
+          <td data-label="Notes"><input value="${esc(sy.notes) || ""}" onchange="updateSystem(${sy.id}, {notes: this.value})" style="width:95%"></td>
+          <td data-label="Roaming" style="text-align:center;" title="Automatic handoff to a neighbor site (within this system) when the active site's signal degrades -- needs a dedicated 'scout' channel configured on a second tuner.">
             <input type="checkbox" ${sy.roaming_enabled ? "checked" : ""} onchange="updateSystem(${sy.id}, {roaming_enabled: this.checked})">
           </td>
-          <td><input type="number" min="1" placeholder="10" value="${sy.roaming_stale_seconds ?? ""}" style="width:60px"
+          <td data-label="Stale (s)"><input type="number" min="1" placeholder="10" value="${sy.roaming_stale_seconds ?? ""}" style="width:60px"
                 onchange="updateSystem(${sy.id}, {roaming_stale_seconds: this.value ? parseInt(this.value) : null})"></td>
-          <td><button class="action danger" onclick="deleteSystem(${sy.id})">Delete</button></td>`;
+          <td class="row-actions"><button class="action danger" onclick="deleteSystem(${sy.id})">Delete</button></td>`;
         tbody.appendChild(tr);
     }
 }
@@ -438,11 +438,11 @@ async function loadTalkgroups() {
     for (const tg of tgs) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td class="mono">${tg.tgid}</td>
-          <td><input value="${esc(tg.name)}" onchange="updateTalkgroup(${tg.id}, {name: this.value})" style="width:95%"></td>
-          <td><select onchange="onCategorySelectChange(this, ${tg.id})">${categorySelectOptions(tg.category_id)}</select></td>
-          <td><input value="${tg.priority ?? ""}" onchange="updateTalkgroup(${tg.id}, {priority: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
-          <td><button class="action danger" onclick="deleteTalkgroup(${tg.id})">Delete</button></td>`;
+          <td class="mono" data-label="TGID">${tg.tgid}</td>
+          <td data-label="Name"><input value="${esc(tg.name)}" onchange="updateTalkgroup(${tg.id}, {name: this.value})" style="width:95%"></td>
+          <td data-label="Group"><select onchange="onCategorySelectChange(this, ${tg.id})">${categorySelectOptions(tg.category_id)}</select></td>
+          <td data-label="Priority"><input value="${tg.priority ?? ""}" onchange="updateTalkgroup(${tg.id}, {priority: this.value ? parseInt(this.value) : null})" style="width:4em"></td>
+          <td class="row-actions"><button class="action danger" onclick="deleteTalkgroup(${tg.id})">Delete</button></td>`;
         tbody.appendChild(tr);
     }
 }
@@ -511,9 +511,9 @@ async function loadCategories(tagSetId) {
     for (const c of categories) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><input value="${esc(c.name)}" onchange="renameCategory(${c.id}, this.value)" style="width:95%"></td>
-          <td>${c.talkgroup_count}</td>
-          <td><button class="action danger" onclick="deleteCategory(${c.id})">Delete</button></td>`;
+          <td data-label="Name"><input value="${esc(c.name)}" onchange="renameCategory(${c.id}, this.value)" style="width:95%"></td>
+          <td data-label="# Talkgroups">${c.talkgroup_count}</td>
+          <td class="row-actions"><button class="action danger" onclick="deleteCategory(${c.id})">Delete</button></td>`;
         tbody.appendChild(tr);
     }
 }
@@ -558,9 +558,9 @@ async function loadListEntries() {
     for (const e of entries) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td class="mono">${e.tgid}</td>
-          <td class="mono">${e.tgid_end ?? "-"}</td>
-          <td><button class="action danger" onclick="deleteListEntry(${e.id})">Delete</button></td>`;
+          <td class="mono" data-label="TGID">${e.tgid}</td>
+          <td class="mono" data-label="TGID End">${e.tgid_end ?? "-"}</td>
+          <td class="row-actions"><button class="action danger" onclick="deleteListEntry(${e.id})">Delete</button></td>`;
         tbody.appendChild(tr);
     }
 }
@@ -610,14 +610,14 @@ async function loadDevices() {
     for (const d of devices) {
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><input value="${esc(d.name)}" onchange="updateDevice(${d.id}, {name: this.value})" style="width:95%"></td>
-          <td><input value="${esc(d.args)}" onchange="updateDevice(${d.id}, {args: this.value})" style="width:95%"></td>
-          <td><input value="${esc(d.gains)}" onchange="updateDevice(${d.id}, {gains: this.value})" style="width:95%"></td>
-          <td><input value="${d.ppm}" type="number" onchange="updateDevice(${d.id}, {ppm: parseInt(this.value)})" style="width:4em"></td>
-          <td><input value="${d.rate}" type="number" onchange="updateDevice(${d.id}, {rate: parseInt(this.value)})" style="width:6em"></td>
-          <td><input value="${d.usable_bw_pct}" type="number" step="0.01" onchange="updateDevice(${d.id}, {usable_bw_pct: parseFloat(this.value)})" style="width:4em"></td>
-          <td><input type="checkbox" ${d.tunable ? "checked" : ""} onchange="updateDevice(${d.id}, {tunable: this.checked})"></td>
-          <td><button class="action danger" onclick="deleteDevice(${d.id})">Delete</button></td>`;
+          <td data-label="Name"><input value="${esc(d.name)}" onchange="updateDevice(${d.id}, {name: this.value})" style="width:95%"></td>
+          <td data-label="Args"><input value="${esc(d.args)}" onchange="updateDevice(${d.id}, {args: this.value})" style="width:95%"></td>
+          <td data-label="Gains"><input value="${esc(d.gains)}" onchange="updateDevice(${d.id}, {gains: this.value})" style="width:95%"></td>
+          <td data-label="PPM"><input value="${d.ppm}" type="number" onchange="updateDevice(${d.id}, {ppm: parseInt(this.value)})" style="width:4em"></td>
+          <td data-label="Rate"><input value="${d.rate}" type="number" onchange="updateDevice(${d.id}, {rate: parseInt(this.value)})" style="width:6em"></td>
+          <td data-label="Usable BW%"><input value="${d.usable_bw_pct}" type="number" step="0.01" onchange="updateDevice(${d.id}, {usable_bw_pct: parseFloat(this.value)})" style="width:4em"></td>
+          <td data-label="Tunable"><input type="checkbox" ${d.tunable ? "checked" : ""} onchange="updateDevice(${d.id}, {tunable: this.checked})"></td>
+          <td class="row-actions"><button class="action danger" onclick="deleteDevice(${d.id})">Delete</button></td>`;
         devTbody.appendChild(tr);
     }
 
@@ -641,18 +641,18 @@ async function loadDevices() {
         const isScout = c.role === "scout";
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
-          <td><select onchange="updateChannel(${c.id}, {device_id: parseInt(this.value)})">${deviceOptions(c.device_id)}</select></td>
-          <td title="'scout' is roaming's dedicated neighbor-evaluation receiver -- never voice-eligible, never has a fixed site (the roaming coordinator points it dynamically).">
+          <td data-label="Name"><input value="${esc(c.name)}" onchange="updateChannel(${c.id}, {name: this.value})" style="width:95%"></td>
+          <td data-label="Device"><select onchange="updateChannel(${c.id}, {device_id: parseInt(this.value)})">${deviceOptions(c.device_id)}</select></td>
+          <td data-label="Role" title="'scout' is roaming's dedicated neighbor-evaluation receiver -- never voice-eligible, never has a fixed site (the roaming coordinator points it dynamically).">
             <select onchange="updateChannel(${c.id}, {role: this.value})">${roleOptions(c.role)}</select>
           </td>
-          <td style="${isScout ? "opacity:0.5;" : ""}" title="${isScout ? "Ignored for a scout channel -- its target is set dynamically by the roaming coordinator." : ""}">
+          <td data-label="Site" style="${isScout ? "opacity:0.5;" : ""}" title="${isScout ? "Ignored for a scout channel -- its target is set dynamically by the roaming coordinator." : ""}">
             <select onchange="updateChannel(${c.id}, {trunking_system_id: this.value ? parseInt(this.value) : null})">${siteOptions(c.trunking_system_id)}</select>
           </td>
-          <td><input value="${esc(c.demod_type)}" onchange="updateChannel(${c.id}, {demod_type: this.value})" style="width:5em"></td>
-          <td><input value="${esc(c.destination)}" onchange="updateChannel(${c.id}, {destination: this.value})" style="width:95%"></td>
-          <td><input value="${esc(c.enable_analog)}" onchange="updateChannel(${c.id}, {enable_analog: this.value})" style="width:4em"></td>
-          <td><button class="action danger" onclick="deleteChannel(${c.id})">Delete</button></td>`;
+          <td data-label="Demod"><input value="${esc(c.demod_type)}" onchange="updateChannel(${c.id}, {demod_type: this.value})" style="width:5em"></td>
+          <td data-label="Destination"><input value="${esc(c.destination)}" onchange="updateChannel(${c.id}, {destination: this.value})" style="width:95%"></td>
+          <td data-label="Analog"><input value="${esc(c.enable_analog)}" onchange="updateChannel(${c.id}, {enable_analog: this.value})" style="width:4em"></td>
+          <td class="row-actions"><button class="action danger" onclick="deleteChannel(${c.id})">Delete</button></td>`;
         chanTbody.appendChild(tr);
     }
 }
