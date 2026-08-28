@@ -64,6 +64,7 @@ td.drag-handle { color: #6e7480; text-align: center; user-select: none; }
 .add-row.open { display: block; }
 .add-row label { display: block; font-size: 0.65rem; color: #9aa0a6; margin-bottom: 0.1rem; }
 .add-row .field { display: inline-block; margin-right: 0.5rem; margin-bottom: 0.3rem; vertical-align: top; }
+.import-errors { color: #ff9494; font-size: 0.68rem; max-height: 8em; overflow-y: auto; }
 
 #toast {
     position: fixed; bottom: 1rem; right: 1rem; background: #2a2e33; border: 1px solid #3a3f45;

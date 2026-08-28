@@ -446,6 +446,65 @@ def create_site(conn, body):
     return get_site(conn, cur.lastrowid)
 
 
+def bulk_import_sites(conn, body):
+    # Paste/upload path for the Sites tab -- one row per site, upserted by
+    # sysname (the table's own natural unique key). Deliberately loose about
+    # column naming/casing since this is meant to accept whatever a human
+    # pastes out of a spreadsheet, not a strict schema -- see app.js's
+    # parseDelimited() for the client-side TSV/CSV split.
+    rows = body.get("rows", [])
+    if not isinstance(rows, list):
+        raise ApiError(400, "rows must be a list")
+    systems_by_name = {
+        r["name"].strip().lower(): r["id"] for r in conn.execute("SELECT id, name FROM systems")
+    }
+    next_order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM sites").fetchone()[0]
+    created, updated, errors = 0, 0, []
+    for i, row in enumerate(rows):
+        try:
+            sysname = str(row.get("sysname") or row.get("site name") or row.get("name") or "").strip()
+            if not sysname:
+                raise ValueError("missing sysname/site name")
+            system_id = None
+            sys_name_val = str(row.get("system") or "").strip()
+            if sys_name_val:
+                system_id = systems_by_name.get(sys_name_val.lower())
+                if system_id is None:
+                    raise ValueError(f"unknown system '{sys_name_val}'")
+            nac = str(row.get("nac") or "0x0").strip()
+            ccl = str(row.get("control_channel_list") or row.get("control channels") or "").strip()
+            tdma_cc = 1 if str(row.get("tdma_cc", "")).strip().lower() in ("1", "true", "yes", "y") else 0
+            cb_raw = row.get("crypt_behavior")
+            crypt_behavior = int(cb_raw) if cb_raw not in (None, "") else 1
+            notes = str(row.get("notes") or "").strip() or None
+
+            existing = conn.execute("SELECT id FROM sites WHERE sysname = ?", (sysname,)).fetchone()
+            if existing:
+                # notes is the one field left alone when the pasted row didn't
+                # carry one -- a topology re-export typically has no notes
+                # column at all, and clobbering hand-written notes on every
+                # re-import would be a real loss for no benefit.
+                conn.execute(
+                    """UPDATE sites SET nac=?, control_channel_list=?, tdma_cc=?, crypt_behavior=?,
+                       system_id=?, notes=COALESCE(?, notes), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                       WHERE id=?""",
+                    (nac, ccl, tdma_cc, crypt_behavior, system_id, notes, existing["id"]),
+                )
+                updated += 1
+            else:
+                conn.execute(
+                    """INSERT INTO sites (sysname, nac, control_channel_list, tdma_cc, crypt_behavior,
+                       system_id, notes, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (sysname, nac, ccl, tdma_cc, crypt_behavior, system_id, notes, next_order),
+                )
+                next_order += 1
+                created += 1
+        except Exception as e:
+            errors.append({"row": i + 2, "error": str(e)})  # +2: header row + 1-indexing
+    conn.commit()
+    return {"created": created, "updated": updated, "errors": errors}
+
+
 def update_site(conn, sid, body):
     get_site(conn, sid)  # 404 if missing
     fields = ["sysname", "nac", "control_channel_list", "tdma_cc", "crypt_behavior",
@@ -641,6 +700,67 @@ def create_talkgroup(conn, tag_set_id, body):
     )
     conn.commit()
     return dict(conn.execute("SELECT * FROM talkgroups WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+
+def bulk_import_talkgroups(conn, tag_set_id, body):
+    # Paste/upload path for the Talkgroups tab -- one row per talkgroup,
+    # upserted by (tag_set_id, tgid), the table's own unique key. Matches the
+    # column layout a RadioReference-style export already uses (tgid, name/
+    # alpha tag, group/category, priority) so a raw copy-paste works without
+    # reformatting first.
+    rows = body.get("rows", [])
+    if not isinstance(rows, list):
+        raise ApiError(400, "rows must be a list")
+    cat_cache = {}
+    created, updated, errors = 0, 0, []
+    for i, row in enumerate(rows):
+        try:
+            tgid_raw = str(row.get("tgid") or "").strip()
+            if not tgid_raw:
+                raise ValueError("missing tgid")
+            tgid = int(tgid_raw, 0)  # base 0: accepts "0x..." same as a hand-entered tgid would
+            name = str(row.get("name") or row.get("alpha tag") or row.get("alpha_tag") or "").strip()
+            if not name:
+                raise ValueError("missing name")
+            priority = None
+            prio_raw = row.get("priority")
+            if prio_raw not in (None, ""):
+                priority = int(prio_raw)
+            notes = str(row.get("notes") or "").strip() or None
+            cat_name = str(row.get("group") or row.get("category") or "").strip()
+            category_id = None
+            if cat_name:
+                key = cat_name.lower()
+                if key not in cat_cache:
+                    cat_cache[key] = find_or_create_category(conn, tag_set_id, cat_name)
+                category_id = cat_cache[key]
+
+            existing = conn.execute(
+                "SELECT id FROM talkgroups WHERE tag_set_id=? AND tgid=?", (tag_set_id, tgid)
+            ).fetchone()
+            if existing:
+                sets, vals = ["name=?"], [name]
+                if cat_name:
+                    sets.append("category_id=?"); vals.append(category_id)
+                if priority is not None:
+                    sets.append("priority=?"); vals.append(priority)
+                if notes:
+                    sets.append("notes=?"); vals.append(notes)
+                sets.append("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+                vals.append(existing["id"])
+                conn.execute(f"UPDATE talkgroups SET {', '.join(sets)} WHERE id=?", vals)
+                updated += 1
+            else:
+                conn.execute(
+                    "INSERT INTO talkgroups (tag_set_id, tgid, name, category_id, priority, notes) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (tag_set_id, tgid, name, category_id, priority, notes),
+                )
+                created += 1
+        except Exception as e:
+            errors.append({"row": i + 2, "error": str(e)})
+    conn.commit()
+    return {"created": created, "updated": updated, "errors": errors}
 
 
 def update_talkgroup(conn, tgid_row, body):
@@ -887,6 +1007,7 @@ ROUTES = [
     ("GET", r"^/api/sites$", lambda conn, m, body, qs: list_sites(conn)),
     ("POST", r"^/api/sites$", lambda conn, m, body, qs: create_site(conn, body)),
     ("POST", r"^/api/sites/reorder$", lambda conn, m, body, qs: reorder_sites(conn, body)),
+    ("POST", r"^/api/sites/bulk_import$", lambda conn, m, body, qs: bulk_import_sites(conn, body)),
     ("GET", r"^/api/sites/(?P<id>\d+)$", lambda conn, m, body, qs: get_site(conn, int(m["id"]))),
     ("PUT", r"^/api/sites/(?P<id>\d+)$", lambda conn, m, body, qs: update_site(conn, int(m["id"]), body)),
     ("DELETE", r"^/api/sites/(?P<id>\d+)$", lambda conn, m, body, qs: delete_site(conn, int(m["id"]))),
@@ -898,6 +1019,7 @@ ROUTES = [
     ("DELETE", r"^/api/tag_sets/(?P<id>\d+)$", lambda conn, m, body, qs: delete_tag_set(conn, int(m["id"]))),
     ("GET", r"^/api/tag_sets/(?P<id>\d+)/talkgroups$", lambda conn, m, body, qs: list_talkgroups(conn, int(m["id"]))),
     ("POST", r"^/api/tag_sets/(?P<id>\d+)/talkgroups$", lambda conn, m, body, qs: create_talkgroup(conn, int(m["id"]), body)),
+    ("POST", r"^/api/tag_sets/(?P<id>\d+)/talkgroups/bulk_import$", lambda conn, m, body, qs: bulk_import_talkgroups(conn, int(m["id"]), body)),
 
     ("GET", r"^/api/tag_sets/(?P<id>\d+)/categories$", lambda conn, m, body, qs: list_categories(conn, int(m["id"]))),
     ("POST", r"^/api/tag_sets/(?P<id>\d+)/categories$", lambda conn, m, body, qs: create_category(conn, int(m["id"]), body)),

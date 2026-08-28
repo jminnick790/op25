@@ -45,6 +45,7 @@
   <div class="toolbar">
     <input id="site-search" class="search" placeholder="Search sites (name, NAC, notes)..." oninput="filterTable('sites-table', this.value)">
     <button class="toggle-add" onclick="toggleAdd('site-add')">+ Add Site</button>
+    <button class="toggle-add" onclick="toggleAdd('site-import')">Bulk Import</button>
   </div>
   <div class="add-row" id="site-add">
     <div class="field"><label>Site Name</label><input id="site-sysname"></div>
@@ -53,6 +54,19 @@
     <div class="field"><label>System</label><select id="site-system"></select></div>
     <div class="field"><label>Notes</label><input id="site-notes" style="width:16em"></div>
     <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createSite()">Add</button></div>
+  </div>
+  <div class="add-row" id="site-import">
+    <p class="hint" style="margin-top:0">
+      Paste TSV or CSV, or upload a file. First row is column headers: <code>sysname</code>
+      (or <code>site name</code>), <code>nac</code>, <code>control_channel_list</code>, <code>system</code>
+      (matched by name), <code>tdma_cc</code>, <code>crypt_behavior</code>, <code>notes</code>. Only
+      <code>sysname</code> is required. Rows are matched to existing sites by name -- a match updates
+      that site, anything new is added.
+    </p>
+    <div class="field"><input type="file" id="site-import-file" accept=".csv,.tsv,.txt" onchange="readFileIntoTextarea(this, 'site-import-text')"></div>
+    <div class="field" style="display:block;width:100%"><textarea id="site-import-text" rows="6" style="width:100%;box-sizing:border-box" placeholder="sysname&#9;nac&#9;control_channel_list&#9;system&#10;My New Site&#9;0x1a2&#9;851.0125,851.5125&#9;NC VIPER"></textarea></div>
+    <div class="field" style="margin-top:0.5rem"><button class="action primary" onclick="importSites()">Import</button></div>
+    <div class="field import-errors" id="site-import-errors"></div>
   </div>
   <p class="hint">Drag rows by the handle to reorder.</p>
   <div class="table-wrap">
@@ -73,6 +87,7 @@
     <select id="tgset-picker" class="tgset-picker" onchange="loadTalkgroups()"></select>
     <input id="tg-search" class="search" placeholder="Search talkgroups (TGID, name, or group)..." oninput="filterTable('talkgroups-table', this.value)">
     <button class="toggle-add" onclick="toggleAdd('tg-add')">+ Add Talkgroup</button>
+    <button class="toggle-add" onclick="toggleAdd('tg-import')">Bulk Import</button>
     <button class="toggle-add" onclick="toggleAdd('cat-manage')">Manage Groups</button>
   </div>
   <div class="add-row" id="tg-add">
@@ -81,6 +96,19 @@
     <div class="field"><label>Group</label><select id="tg-category"></select></div>
     <div class="field"><label>Priority</label><input id="tg-prio" type="number" style="width:5em"></div>
     <div class="field" style="margin-top:0.9rem"><button class="action primary" onclick="createTalkgroup()">Add</button></div>
+  </div>
+  <div class="add-row" id="tg-import">
+    <p class="hint" style="margin-top:0">
+      Paste TSV or CSV, or upload a file, for the tag set selected above. First row is column
+      headers: <code>tgid</code>, <code>name</code> (or <code>alpha tag</code>), <code>group</code>
+      (or <code>category</code> -- created if it doesn't exist yet), <code>priority</code>,
+      <code>notes</code>. Only <code>tgid</code> and <code>name</code> are required. Rows are
+      matched to existing talkgroups by TGID -- a match updates that talkgroup, anything new is added.
+    </p>
+    <div class="field"><input type="file" id="tg-import-file" accept=".csv,.tsv,.txt" onchange="readFileIntoTextarea(this, 'tg-import-text')"></div>
+    <div class="field" style="display:block;width:100%"><textarea id="tg-import-text" rows="6" style="width:100%;box-sizing:border-box" placeholder="tgid&#9;name&#9;group&#9;priority&#10;52101&#9;PD Dispatch&#9;Police&#9;1"></textarea></div>
+    <div class="field" style="margin-top:0.5rem"><button class="action primary" onclick="importTalkgroups()">Import</button></div>
+    <div class="field import-errors" id="tg-import-errors"></div>
   </div>
   <div class="add-row" id="cat-manage">
     <p class="hint" style="margin-top:0">Rename a group and every talkgroup using it updates at once. Deleting a group just clears it from those talkgroups.</p>

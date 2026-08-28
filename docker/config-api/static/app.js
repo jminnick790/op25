@@ -123,6 +123,67 @@ function initSortableHeaders(tableId) {
     });
 }
 
+// -------------------------------------------------------- bulk import --
+//
+// Shared by the Sites and Talkgroups tabs' "Bulk Import" panels: parse
+// pasted/uploaded TSV or CSV text into an array of {header: value} row
+// objects, header names lowercased so app.py's bulk_import_* handlers can
+// match a few accepted spellings per column (e.g. "site name" or "sysname").
+
+function parseDelimited(text) {
+    const lines = text.replace(/\r\n?/g, "\n").split("\n").filter(l => l.trim() !== "");
+    if (!lines.length) return [];
+    const delim = lines[0].includes("\t") ? "\t" : ",";
+    const splitLine = (line) => {
+        if (delim === "\t") return line.split("\t").map(s => s.trim());
+        // Minimal CSV split: handles quoted fields (with "" as an escaped
+        // quote) so a pasted Name column containing a comma doesn't split
+        // wrong -- anything more than that (embedded newlines, etc.) is out
+        // of scope for a paste-into-textarea flow.
+        const out = [];
+        let cur = "", inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const c = line[i];
+            if (inQuotes) {
+                if (c === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else inQuotes = false; }
+                else cur += c;
+            } else if (c === '"') inQuotes = true;
+            else if (c === ",") { out.push(cur.trim()); cur = ""; }
+            else cur += c;
+        }
+        out.push(cur.trim());
+        return out;
+    };
+    const header = splitLine(lines[0]).map(h => h.toLowerCase());
+    return lines.slice(1).map(line => {
+        const cols = splitLine(line);
+        const row = {};
+        header.forEach((h, i) => { row[h] = cols[i] !== undefined ? cols[i] : ""; });
+        return row;
+    });
+}
+
+function bulkImportSummary(result) {
+    const parts = [`${result.created} added`, `${result.updated} updated`];
+    if (result.errors.length) parts.push(`${result.errors.length} skipped`);
+    return parts.join(", ");
+}
+
+function renderBulkImportErrors(elId, errors) {
+    const el = document.getElementById(elId);
+    if (!errors.length) { el.textContent = ""; return; }
+    el.innerHTML = "Skipped rows:<br>" + errors.map(e => `line ${e.row}: ${esc(e.error)}`).join("<br>");
+}
+
+function readFileIntoTextarea(inputEl, textareaId) {
+    const file = inputEl.files[0];
+    inputEl.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => { document.getElementById(textareaId).value = reader.result; };
+    reader.readAsText(file);
+}
+
 // ----------------------------------------------------------------- sites --
 
 async function loadSites() {
@@ -223,6 +284,17 @@ async function createSite() {
         });
         toast("Site added");
         loadSites();
+    } catch (e) { toast(e.message, true); }
+}
+
+async function importSites() {
+    const rows = parseDelimited(document.getElementById("site-import-text").value);
+    if (!rows.length) { toast("Paste or upload some rows first", true); return; }
+    try {
+        const result = await api("POST", "/api/sites/bulk_import", { rows });
+        toast("Sites: " + bulkImportSummary(result), !!(result.errors.length && !result.created && !result.updated));
+        renderBulkImportErrors("site-import-errors", result.errors);
+        if (result.created || result.updated) loadSites();
     } catch (e) { toast(e.message, true); }
 }
 
@@ -382,6 +454,19 @@ async function createTalkgroup() {
         });
         toast("Talkgroup added");
         loadTalkgroups();
+    } catch (e) { toast(e.message, true); }
+}
+
+async function importTalkgroups() {
+    const tagSetId = document.getElementById("tgset-picker").value;
+    if (!tagSetId) { toast("Pick a tag set first", true); return; }
+    const rows = parseDelimited(document.getElementById("tg-import-text").value);
+    if (!rows.length) { toast("Paste or upload some rows first", true); return; }
+    try {
+        const result = await api("POST", `/api/tag_sets/${tagSetId}/talkgroups/bulk_import`, { rows });
+        toast("Talkgroups: " + bulkImportSummary(result), !!(result.errors.length && !result.created && !result.updated));
+        renderBulkImportErrors("tg-import-errors", result.errors);
+        if (result.created || result.updated) loadTalkgroups();
     } catch (e) { toast(e.message, true); }
 }
 
