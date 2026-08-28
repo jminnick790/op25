@@ -177,6 +177,12 @@ document.addEventListener("DOMContentLoaded", function() {
 	document.addEventListener('click', function initAudioCtx() {
 		if (!muteAudioAtStartup && !audioCtx) {
 			audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: WS_AUDIO_SAMPLE_RATE });
+			// iOS Safari can still hand back a suspended context even when
+			// constructed inside a genuine click -- resume() is the standard
+			// defensive call for this, and issuing it synchronously here
+			// (not awaiting the returned promise) is what counts toward the
+			// user-gesture requirement.
+			if (audioCtx.state === 'suspended') audioCtx.resume();
 			Object.keys(audioChannels).forEach(function(ch) { audio_play(ch); });
 		}
 	}, { once: true });
@@ -2687,6 +2693,12 @@ function ws_instances(instances) {
 function audio_play(channel) {
     var state = audioChannels[channel];
     if (!audioCtx || state.muted || state.queue.length === 0) return;
+    // Defensive resume -- iOS auto-suspends an AudioContext on backgrounding/
+    // screen lock; this doesn't count as a user gesture on its own, but if the
+    // context was already unlocked once by audio_toggle()'s resume() below,
+    // this brings it back once the tab's foregrounded again instead of
+    // silently scheduling playback into a suspended, non-rendering context.
+    if (audioCtx.state === 'suspended') audioCtx.resume();
     if (state.nextPlayTime < audioCtx.currentTime)
         state.nextPlayTime = audioCtx.currentTime;
     while (state.queue.length > 0) {
@@ -2706,6 +2718,15 @@ function audio_play(channel) {
 function audio_toggle(channel) {
     if (!audioCtx)
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: WS_AUDIO_SAMPLE_RATE });
+    // This function is called synchronously from the play icon's onclick --
+    // the one genuine user gesture this codebase has for "start this
+    // channel's audio". Calling resume() here (not awaiting the promise --
+    // issuing the call synchronously is what satisfies iOS's gesture
+    // requirement) is the actual fix for audio silently not playing on iOS
+    // Safari: the context can exist and report as constructed while still
+    // being suspended, especially when it was created earlier by the
+    // page-wide first-click listener rather than this specific tap.
+    if (audioCtx.state === 'suspended') audioCtx.resume();
     if (!(channel in audioChannels))
         audioChannels[channel] = { queue: [], nextPlayTime: 0, muted: true };
     var state = audioChannels[channel];
