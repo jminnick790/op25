@@ -1,9 +1,42 @@
-# This is the boatbod fork of op25.  
+# OP25 -- Dockerized P25 Trunked Radio Monitoring
 
-## Docker / remote-SDR streaming
-For running OP25 in Docker against a remote `rtl_tcp` source and streaming
-decoded audio to a browser via Icecast, see
-[README-docker-streaming.md](README-docker-streaming.md).
+This is a further fork of [boatbod/op25](https://github.com/boatbod/op25) -- itself
+the actively maintained fork of the original op25 project (see
+[History](#history) below for the full lineage) -- built out into a
+self-contained, Docker-deployed P25 trunked-system monitoring stack. The
+`rx.py`/`multi_rx.py` decoder engine and everything it can do (see the
+capability lists below) are unchanged and fully credited upstream to boatbod
+and the original op25/osmocom project; what this fork adds sits on top of
+that engine, not in place of it.
+
+## What this fork adds
+
+- **Docker deployment, SQLite-backed config** -- one container, one image,
+  config managed through a database instead of hand-edited JSON/TSV files.
+  See [README-docker-streaming.md](README-docker-streaming.md) for the full
+  setup guide: remote-SDR-over-`rtl_tcp`, the worker/server process split,
+  and the named-volume config DB.
+- **Web admin UI** -- manage systems, sites, talkgroups, groups,
+  devices/channels, and white/blacklists without touching a config file;
+  drag-to-reorder sites, search/sort, export/import the whole DB. Responsive
+  down to phone-sized screens, with collapsible per-row cards for browsing
+  long lists in the field.
+- **TSV/CSV bulk import** -- paste or upload a spreadsheet of sites or
+  talkgroups instead of adding them one at a time.
+- **Automatic site roaming** -- a dedicated scout SDR channel continuously
+  evaluates neighbor sites (via live adjacent-site broadcasts) and hands the
+  primary receiver off make-before-break when the active site's voice
+  quality degrades or its control channel goes stale -- built for
+  vehicle/mobile use where a single site's coverage runs out. Neighbor sites
+  are auto-discovered from a system's own broadcasts as they're observed,
+  and a roam-events log records the full decision trail for after-the-fact
+  review.
+- **Live web UI + persistent history** -- Server-Sent Events push live
+  channel/call state to the browser, backed by a persistent call log,
+  subscriber registration history, and neighbor-site table for querying
+  activity after the fact.
+
+For setup, see [README-docker-streaming.md](README-docker-streaming.md).
 
 ## `rx.py` capabilities
 

@@ -134,8 +134,9 @@ expected, not a bug.
 ## 5. Use it
 
 - **Admin UI** (manage systems, sites, talkgroups, groups, white/blacklists,
-  reorder/search/sort, export config, switch which site is active):
-  `http://<docker-host>:8091` (`CONFIG_API_HOST_PORT`).
+  reorder/search/sort, TSV/CSV bulk import for sites and talkgroups, export
+  config, switch which site is active -- responsive down to phone-sized
+  screens): `http://<docker-host>:8091` (`CONFIG_API_HOST_PORT`).
 - **New UI** (live channel status, call log, low-latency WebSocket audio
   player): `http://<docker-host>:8080` (`OP25_HTTP_HOST_PORT`).
 
@@ -162,9 +163,30 @@ for that.
   `rtl_tcp` clients -- adjust via the device's `rate`/`gains` fields on
   the admin UI's Devices tab, then restart `op25` to apply.
 
+## Automatic site roaming
+
+For mobile/vehicle use, a system can hand itself off between sites live,
+without restarting `op25` -- a dedicated **scout** channel (a second SDR)
+continuously evaluates neighbor sites in the background, and the primary
+receiver retargets to a better one the moment the active site's voice
+quality degrades or its control channel goes stale. This is separate from
+manually clicking "Set Active" on the Sites tab, which still restarts
+`op25` (see below) -- roaming's handoff never does.
+
+To turn it on: give a system's row on the Systems tab a checked
+**Roaming** box (optionally a **Stale (s)** override), and add a second
+channel on the Devices tab with **Role** set to `scout` bound to a second
+SDR device. Neighbor sites are auto-discovered as they're observed via a
+system's own adjacent-site broadcasts and added to the Sites tab
+automatically; a newly-discovered site still needs an `op25` restart
+before it becomes an actual roaming candidate (see
+`docker/config/schema.sql`'s comments), since the neighbor map is only
+built once at worker startup. Roam decisions (scout attempts, rejections,
+commits) are logged and queryable via `GET /api/roam_events`.
+
 ## Out of scope for now
 
-Tailscale setup itself, recording, MQTT/Home Assistant integration, and
-true no-restart hot-swap between active sites (switching still restarts
-`op25` -- see `docker/config/schema.sql`'s comments) are deliberately left
-out.
+Tailscale setup itself, recording, and MQTT/Home Assistant integration are
+deliberately left out. Manually switching the active site via the admin UI
+still restarts `op25` -- GNU Radio's flowgraph can't be reconfigured live
+for a change like that -- automatic roaming (above) is the no-restart path.
