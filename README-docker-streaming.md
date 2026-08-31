@@ -182,13 +182,41 @@ manually clicking "Set Active" on the Sites tab, which still restarts
 To turn it on: give a system's row on the Systems tab a checked
 **Roaming** box (optionally a **Stale (s)** override), and add a second
 channel on the Devices tab with **Role** set to `scout` bound to a second
-SDR device. Neighbor sites are auto-discovered as they're observed via a
-system's own adjacent-site broadcasts and added to the Sites tab
-automatically; a newly-discovered site still needs an `op25` restart
-before it becomes an actual roaming candidate (see
-`docker/config/schema.sql`'s comments), since the neighbor map is only
-built once at worker startup. Roam decisions (scout attempts, rejections,
-commits) are logged and queryable via `GET /api/roam_events`.
+SDR device. Roam decisions (scout attempts, rejections, commits) are
+logged and queryable via `GET /api/roam_events`.
+
+**Known limitation: roaming candidates are fixed at worker startup, not
+live.** `op25` builds its neighbor-resolution map once when it starts and
+never updates it while running. Neighbor sites *are* auto-discovered in
+real time as they're observed via a system's own adjacent-site broadcasts
+-- they show up on the Sites tab right away -- but a newly-discovered site
+only becomes an actual roaming *candidate* after the next `op25` restart
+(see `docker/config/schema.sql`'s comments).
+
+In practice this means: driving through territory that was never
+configured or previously observed, `op25` can only ever hand off to sites
+it already knew about (with `rfid`/`stid` populated) as of its last
+restart -- it can't chain through a second or third tier of sites that are
+only discovered *during* the same drive, because each new tier would need
+its own restart to become usable, and restarting mid-drive isn't
+practical. So on a genuinely long trip -- several counties beyond where
+you started -- expect roaming to carry you through the first couple of
+hops and then stop, once you run out of sites it already knew about.
+
+Two ways to work around this today: **pre-seed the route** before a long
+trip -- bulk-import (see the Admin UI bullet above) or hand-enter the
+sites you expect to pass through, including their `rfid`/`stid` if you
+know them (the site editor accepts these directly, no need to have
+observed them first) --
+or **do a scouting pass**: drive the route once with roaming on to let
+auto-discovery populate the Sites tab for the whole area, then restart
+`op25` once before the trip that actually matters, so every site along
+the way is already a live candidate. Making the neighbor map refresh
+without a restart is a real possible improvement, just not implemented
+yet -- restarting is the one thing this project's worker/server split
+was specifically built to make cheap for exactly this class of change,
+so it's more an inconvenience than a redesign away from being fixed
+someday, not a fundamental limit.
 
 **Only one SDR?** Roaming still works with a single dongle -- if a
 `roaming_enabled` system has no scout channel configured at all, it
