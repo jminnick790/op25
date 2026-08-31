@@ -165,9 +165,23 @@ class rx_ctl(object):
         self.receivers = {}
         self.systems = {}
         self.chans = chans
+        # Every chan dict carries the same _db_path (see
+        # db_config.build_config_from_db()) -- rx_ctl itself never got a
+        # direct reference to it until add_site() needed one to look up a
+        # single newly-discovered site's row live. None in JSON-fallback
+        # config mode (no _db_path key at all), which correctly makes
+        # add_site() a safe no-op there -- nothing to query.
+        self._db_path = next((c.get('_db_path') for c in self.chans if c.get('_db_path')), None)
         self.cleanup_timer = time.time()
         self.call_log = deque(maxlen=CALL_LOG_MAX_LEN)
         self.call_log_mutex = TimeoutLock(timeout=1.0)
+        # Guards self.systems/self.neighbor_map specifically against
+        # add_site() -- see that method's own comment for why this is the
+        # first thing that ever needed a lock here: two independent
+        # du_queue_watcher threads (multi_rx.py) touch this dict, and
+        # add_site() is the first code path that inserts a NEW key into it
+        # after __init__ instead of just mutating an existing one.
+        self.systems_mutex = TimeoutLock(timeout=1.0)
 
         for chan in self.chans:
             sysname = chan['sysname']
@@ -374,23 +388,28 @@ class rx_ctl(object):
 
     # Check for control channel assignments to idle receivers
     def check_cc_assignments(self):
-        for p25_sysname in self.systems:
-            p25_system = self.systems[p25_sysname]['system']
-            if p25_system.cc_msgq_id is None:
-                if self.debug >= 10:
-                    sys.stderr.write("%s [%s] needs control channel receiver\n" % (log_ts.get(), p25_sysname))
-                for rx in self.systems[p25_sysname]['receivers']:
-                    if rx.tuner_idle:
-                        if self.debug >= 10:
-                            sys.stderr.write("%s [%s] attempt to assign control channel receiver[%d]\n" % (log_ts.get(), p25_sysname, rx.msgq_id))
-                        rx.tune_cc(p25_system.get_cc(rx.msgq_id))
-                        break
-                    else:
-                        if self.debug >= 10:
-                            sys.stderr.write("%s [%s] receiver[%d] not idle\n" % (log_ts.get(), p25_sysname, rx.msgq_id))
-            if p25_system.cc_msgq_id is None: # no receivers assigned
-                if self.debug >= 5:
-                    sys.stderr.write("%s [%s] has no idle receivers for control channel monitoring\n" % (log_ts.get(), p25_sysname))
+        # Locked -- see systems_mutex's comment in __init__: add_site() can
+        # insert a new key into self.systems from the other du_queue_watcher
+        # thread while this is mid-iteration, which would otherwise raise
+        # "dictionary changed size during iteration" here.
+        with self.systems_mutex:
+            for p25_sysname in self.systems:
+                p25_system = self.systems[p25_sysname]['system']
+                if p25_system.cc_msgq_id is None:
+                    if self.debug >= 10:
+                        sys.stderr.write("%s [%s] needs control channel receiver\n" % (log_ts.get(), p25_sysname))
+                    for rx in self.systems[p25_sysname]['receivers']:
+                        if rx.tuner_idle:
+                            if self.debug >= 10:
+                                sys.stderr.write("%s [%s] attempt to assign control channel receiver[%d]\n" % (log_ts.get(), p25_sysname, rx.msgq_id))
+                            rx.tune_cc(p25_system.get_cc(rx.msgq_id))
+                            break
+                        else:
+                            if self.debug >= 10:
+                                sys.stderr.write("%s [%s] receiver[%d] not idle\n" % (log_ts.get(), p25_sysname, rx.msgq_id))
+                if p25_system.cc_msgq_id is None: # no receivers assigned
+                    if self.debug >= 5:
+                        sys.stderr.write("%s [%s] has no idle receivers for control channel monitoring\n" % (log_ts.get(), p25_sysname))
 
     # ------------------------------------------------------------ roaming --
     # Automatic site handoff for the mobile use case: as the primary
@@ -776,22 +795,63 @@ class rx_ctl(object):
         # Check for control channel reassignment
         self.check_cc_assignments()
 
+    def add_site(self, site_config):
+        # Called from multi_rx.py's rx_block.process_qmsg() on the
+        # "add_site" worker command (the ui_out_q watcher thread) --
+        # constructs a live p25_system for a brand-new site discovered by
+        # roaming's neighbor auto-discovery (app.py's
+        # _ensure_neighbor_site_placeholder()) without a full worker
+        # restart. The new site starts with zero receivers pointed at it,
+        # same as any other never-yet-active configured site -- it only
+        # becomes usable once roaming (or a manual channel reassignment)
+        # actually retargets a receiver onto it, through the exact same
+        # paths that already exist for every other site.
+        #
+        # Idempotent: a duplicate or late notification for a sysname
+        # already present is a silent no-op, not an error -- guards
+        # against ever clobbering a possibly-already-active object with a
+        # fresh duplicate.
+        #
+        # Locked: this is the first code path that inserts a NEW key into
+        # self.systems/self.neighbor_map after __init__, instead of just
+        # mutating an existing one -- see systems_mutex's comment in
+        # __init__ for why that specifically needed a lock that nothing
+        # else here did before.
+        if not site_config or not site_config.get('sysname'):
+            sys.stderr.write("%s [rx_ctl] add_site: missing/invalid config, ignoring\n" % log_ts.get())
+            return
+        sysname = site_config['sysname']
+        with self.systems_mutex:
+            if sysname in self.systems:
+                if self.debug >= 5:
+                    sys.stderr.write("%s [rx_ctl] add_site: '%s' already known, ignoring\n" % (log_ts.get(), sysname))
+                return
+            new_system = p25_system(debug=self.debug, config=site_config, rx_ctl=self)
+            self.systems[sysname] = {'system': new_system, 'receivers': []}
+            if new_system.rfid and new_system.stid and new_system.group_system_id is not None:
+                self.neighbor_map[(new_system.group_system_id, new_system.rfid, new_system.stid)] = new_system
+        sys.stderr.write("%s [rx_ctl] add_site: added '%s' (rfid=%s stid=%s) live -- no restart needed\n" %
+                          (log_ts.get(), sysname, new_system.rfid, new_system.stid))
+        self.check_cc_assignments()
+
     def to_json(self):
         d = {'json_type': 'trunk_update'}
         syid = 0;
-        for system in self.systems:
-            d[syid] = json.loads(self.systems[system]['system'].to_json())
-            syid += 1
+        with self.systems_mutex:   # see check_cc_assignments()'s comment
+            for system in self.systems:
+                d[syid] = json.loads(self.systems[system]['system'].to_json())
+                syid += 1
         d['nac'] = 0
         return json.dumps(d)
 
     def dump_tgids(self):
-        for system in self.systems:
-            self.systems[system]['system'].dump_tgids()
-            self.systems[system]['system'].dump_patches()
-            self.systems[system]['system'].dump_wuids()
-            self.systems[system]['system'].dump_rids()
-            self.systems[system]['system'].sourceid_history.dump()
+        with self.systems_mutex:   # see check_cc_assignments()'s comment
+            for system in self.systems:
+                self.systems[system]['system'].dump_tgids()
+                self.systems[system]['system'].dump_patches()
+                self.systems[system]['system'].dump_wuids()
+                self.systems[system]['system'].dump_rids()
+                self.systems[system]['system'].sourceid_history.dump()
 
     def get_chan_status(self):
         d = {'json_type': 'channel_update'}
@@ -829,9 +889,10 @@ class rx_ctl(object):
 
     def set_debug(self, dbglvl):
         self.debug = dbglvl
-        for rx_sys in self.systems:
-            if self.systems[rx_sys]['system'] is not None:
-                self.systems[rx_sys]['system'].set_debug(dbglvl)
+        with self.systems_mutex:   # see check_cc_assignments()'s comment
+            for rx_sys in self.systems:
+                if self.systems[rx_sys]['system'] is not None:
+                    self.systems[rx_sys]['system'].set_debug(dbglvl)
         for rcvr in self.receivers:
             if self.receivers[rcvr]['rx_rcvr'] is not None:
                 self.receivers[rcvr]['rx_rcvr'].set_debug(dbglvl)

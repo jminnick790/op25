@@ -23,6 +23,64 @@ def _connect(db_path, read_only=True):
     return conn
 
 
+def _site_row_to_chan_config(row, db_path):
+    # Shared by build_config_from_db() (every site, at worker startup) and
+    # build_single_site_config() (one site, live -- see tk_p25.py's
+    # rx_ctl.add_site()) so the per-site dict shape p25_system.__init__
+    # expects can't silently drift apart between the two call sites.
+    return {
+        "sysname": row["sysname"],
+        "nac": row["nac"],
+        "control_channel_list": row["control_channel_list"],
+        "tdma_cc": bool(row["tdma_cc"]),
+        "crypt_behavior": row["crypt_behavior"],
+        "whitelist": "",
+        "blacklist": "",
+        "tgid_tags_file": "",
+        "rid_tags_file": "",
+        # rfid/stid (P25's own site identity) and the logical-group
+        # system_id (distinct from _db_system_id below, which is
+        # actually this SITE's own row id) -- roaming's neighbor
+        # matcher builds a (system_id, rfid, stid) -> p25_system map
+        # from these at startup (tk_p25.py's rx_ctl.__init__()).
+        "rfid": row["rfid"],
+        "stid": row["stid"],
+        "system_id": row["system_id"],
+        # roaming_enabled/roaming_stale_seconds are SYSTEM-level
+        # (systems table), joined in above -- LEFT JOIN means a site
+        # with no system_id gets NULL/None here, which p25_system
+        # treats as "roaming off" (falsy) same as an explicit 0.
+        "roaming_enabled": bool(row["roaming_enabled"]),
+        "roaming_stale_seconds": row["roaming_stale_seconds"],
+        "_db_path": db_path,
+        "_db_system_id": row["id"],
+        "_db_tag_set_id": row["tag_set_id"],
+        "_db_whitelist_id": row["whitelist_id"],
+        "_db_blacklist_id": row["blacklist_id"],
+    }
+
+
+def build_single_site_config(db_path, site_id):
+    # Live counterpart to build_config_from_db()'s per-site query, scoped to
+    # one row -- used by multi_rx.py's "add_site" worker command so a
+    # brand-new site discovered mid-session (see app.py's
+    # _ensure_neighbor_site_placeholder()) can get a p25_system constructed
+    # without rebuilding every other already-running site's config too.
+    # Returns None if the id doesn't exist (already deleted, or a stale/
+    # duplicate notification), which the caller treats as a no-op.
+    conn = _connect(db_path)
+    try:
+        row = conn.execute("""
+            SELECT s.*, sy.tag_set_id, sy.whitelist_id, sy.blacklist_id,
+                   sy.roaming_enabled, sy.roaming_stale_seconds
+            FROM sites s LEFT JOIN systems sy ON s.system_id = sy.id
+            WHERE s.id = ?
+        """, (site_id,)).fetchone()
+        return None if row is None else _site_row_to_chan_config(row, db_path)
+    finally:
+        conn.close()
+
+
 def build_config_from_db(db_path):
     conn = _connect(db_path)
     try:
@@ -47,36 +105,7 @@ def build_config_from_db(db_path):
             FROM sites s LEFT JOIN systems sy ON s.system_id = sy.id
         """):
             sys_id_to_sysname[row["id"]] = row["sysname"]
-            chans.append({
-                "sysname": row["sysname"],
-                "nac": row["nac"],
-                "control_channel_list": row["control_channel_list"],
-                "tdma_cc": bool(row["tdma_cc"]),
-                "crypt_behavior": row["crypt_behavior"],
-                "whitelist": "",
-                "blacklist": "",
-                "tgid_tags_file": "",
-                "rid_tags_file": "",
-                # rfid/stid (P25's own site identity) and the logical-group
-                # system_id (distinct from _db_system_id below, which is
-                # actually this SITE's own row id) -- roaming's neighbor
-                # matcher builds a (system_id, rfid, stid) -> p25_system map
-                # from these at startup (tk_p25.py's rx_ctl.__init__()).
-                "rfid": row["rfid"],
-                "stid": row["stid"],
-                "system_id": row["system_id"],
-                # roaming_enabled/roaming_stale_seconds are SYSTEM-level
-                # (systems table), joined in above -- LEFT JOIN means a site
-                # with no system_id gets NULL/None here, which p25_system
-                # treats as "roaming off" (falsy) same as an explicit 0.
-                "roaming_enabled": bool(row["roaming_enabled"]),
-                "roaming_stale_seconds": row["roaming_stale_seconds"],
-                "_db_path": db_path,
-                "_db_system_id": row["id"],
-                "_db_tag_set_id": row["tag_set_id"],
-                "_db_whitelist_id": row["whitelist_id"],
-                "_db_blacklist_id": row["blacklist_id"],
-            })
+            chans.append(_site_row_to_chan_config(row, db_path))
 
         channels = []
         device_rows = list(conn.execute(

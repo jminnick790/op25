@@ -1346,13 +1346,22 @@ def _hz_to_cc_freq_str(hz):
 def _ensure_neighbor_site_placeholder(conn, observing_site, system_name, rfid, stid, freq_hz):
     # Auto-create a sites row for a neighbor observed via adj_sts_bcst that
     # doesn't match any site already known for this system -- so a genuinely
-    # new site becomes visible (and, after a worker restart rebuilds
-    # rx_ctl's neighbor_map, usable as a roaming candidate) without an admin
-    # having to notice it in the logs and hand-enter it first. Mirrors
-    # _ensure_talkgroup_placeholder's reasoning for the identical problem.
+    # new site becomes visible, and (via persist_state()'s post-commit
+    # worker notification -- see the "add_site" caller below) usable as a
+    # roaming candidate immediately, with no worker restart needed, without
+    # an admin having to notice it in the logs and hand-enter it first.
+    # Mirrors _ensure_talkgroup_placeholder's reasoning for the identical
+    # problem. Returns the new row's id on the create path (persist_state()
+    # uses it to notify the worker), None on the backfill path or any
+    # skip/failure -- there's nothing new to notify about in those cases.
+    #
     # Also backfills control_channel_list on an EXISTING match if it's still
     # blank -- the intended path for a site that was deliberately bulk
     # imported with just name/rfid/stid, frequency to follow once observed.
+    # That existing site may already have a live (inert, frequency-less)
+    # p25_system in the worker; refreshing ITS in-memory state is a
+    # different problem than constructing a brand-new one and isn't handled
+    # here -- see the addendum plan's explicit non-goal note.
     #
     # Deliberately conservative about WHEN to create: if this system already
     # has any site with rfid/stid still NULL, that site could plausibly BE
@@ -1403,7 +1412,7 @@ def _ensure_neighbor_site_placeholder(conn, observing_site, system_name, rfid, s
     # already relies on) -- noted in the placeholder's own notes field so
     # it's not silently trusted as verified.
     try:
-        conn.execute(
+        cur = conn.execute(
             """INSERT INTO sites
                (system_id, sysname, nac, control_channel_list, tdma_cc, crypt_behavior, rfid, stid, notes)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -1412,15 +1421,16 @@ def _ensure_neighbor_site_placeholder(conn, observing_site, system_name, rfid, s
              observing_site["tdma_cc"], observing_site["crypt_behavior"], rfid, stid,
              f"Auto-added: observed as a neighbor of {observing_site['sysname']} but never seen directly. "
              "nac/tdma_cc/crypt_behavior are copied from that site as a best guess, not confirmed for this "
-             "one -- verify and rename before relying on it. Requires a worker restart before it's usable "
-             "as a roaming candidate."),
+             "one -- verify and rename before relying on it."),
         )
         sys.stderr.write(
             f"persist_state: auto-added neighbor site '{system_name} - Unconfigured site ({rfid}-{stid})' "
             f"(system_id={system_id}, rfid={rfid}, stid={stid}), observed via {observing_site['sysname']}\n"
         )
+        return cur.lastrowid
     except sqlite3.IntegrityError as e:
         sys.stderr.write(f"persist_state: auto-add neighbor site skipped (sysname collision?): {e}\n")
+        return None
 
 
 def persist_state(conn, responses, should_persist_trunk=True):
@@ -1440,6 +1450,14 @@ def persist_state(conn, responses, should_persist_trunk=True):
     call_log = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "call_log"), None)
     active_channels = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "active_channels"), None)
     roam_events = next((r for r in responses if isinstance(r, dict) and r.get("json_type") == "roam_events"), None)
+
+    # Collected from _ensure_neighbor_site_placeholder()'s create path
+    # below, notified to the worker AFTER conn.commit() at the bottom of
+    # this function (not inline) -- the worker's add_site handling opens
+    # its own separate SQLite connection, and would race an uncommitted
+    # row if notified any earlier. See the live-neighbor-map-refresh
+    # addendum plan.
+    newly_created_site_ids = []
 
     # sysname -> site row, built once per push whenever anything below needs
     # it (trunk_update entries, or a roam write-back). trunk_update carries
@@ -1511,9 +1529,11 @@ def persist_state(conn, responses, should_persist_trunk=True):
                 # independently useful even on a system with roaming off
                 # (see _ensure_neighbor_site_placeholder for why/when).
                 if entry.get("valid"):
-                    _ensure_neighbor_site_placeholder(
+                    new_site_id = _ensure_neighbor_site_placeholder(
                         conn, site_row, site_row["system_name"], entry.get("rfid"), entry.get("stid"), int(freq)
                     )
+                    if new_site_id is not None:
+                        newly_created_site_ids.append(new_site_id)
 
     if should_persist_trunk and active_channels and active_channels.get("primary_system"):
         # Best-effort DB write-back after a successful roam, so a restart
@@ -1581,6 +1601,18 @@ def persist_state(conn, responses, should_persist_trunk=True):
                 )
 
     conn.commit()
+
+    # Only after the commit above -- see newly_created_site_ids' own
+    # comment for why. Best-effort: an unreachable/timed-out worker just
+    # misses this notification and picks the site up the normal way (a
+    # full config rebuild) on its next restart, exactly like before this
+    # feature existed -- the row itself is already safely persisted either
+    # way, so this never needs to be retried or treated as a hard failure.
+    for site_id in newly_created_site_ids:
+        try:
+            worker_send_command("add_site", site_id, 0)
+        except ApiError as e:
+            sys.stderr.write(f"persist_state: could not notify worker of new site id={site_id}: {e}\n")
 
 
 _last_persist_ts = 0.0

@@ -942,6 +942,26 @@ class rx_block (gr.top_block):
             # TODO: find a better way to invoke
             for chan in self.channels:
                 chan.error_tracking()
+        elif s == 'add_site':
+            # Sent by docker/config-api/app.py's
+            # _ensure_neighbor_site_placeholder() right after committing a
+            # new sites row for a neighbor observed via roaming's
+            # auto-discovery. arg1 is the new row's sites.id. Deliberately
+            # NOT in RX_COMMANDS -- that set is routed by arg2/msgq_id down
+            # to one specific receiver (rx_ctl.ui_command()), but this isn't
+            # about any one receiver, it's adding a whole new system to
+            # rx_ctl's own state (see rx_ctl.add_site()).
+            if self.trunking is not None and self.trunk_rx is not None:
+                site_id = int(msg.arg1())
+                if self.trunk_rx._db_path is None:
+                    sys.stderr.write("%s add_site: no DB configured (JSON-fallback mode), ignoring site_id=%d\n" % (log_ts.get(), site_id))
+                else:
+                    site_config = db_config.build_single_site_config(self.trunk_rx._db_path, site_id)
+                    if site_config is None:
+                        sys.stderr.write("%s add_site: site_id=%d not found (deleted since notified?), ignoring\n" % (log_ts.get(), site_id))
+                    else:
+                        self.trunk_rx.add_site(site_config)
+            ui_rsp.append({'json_type': "ok", 'uuid': m_uuid})
         elif s in RX_COMMANDS:
             if self.trunking is not None and self.trunk_rx is not None:
                 self.trunk_rx.ui_command(s, msg.arg1(), msg.arg2())
