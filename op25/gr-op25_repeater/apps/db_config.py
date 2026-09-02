@@ -46,6 +46,12 @@ def _site_row_to_chan_config(row, db_path):
         "rfid": row["rfid"],
         "stid": row["stid"],
         "system_id": row["system_id"],
+        # The admin's own drag-to-reorder preference for this site (sites
+        # table, config-api's Sites tab) -- used as a priority hint by
+        # roaming's cold-start candidate ordering (tk_p25.py's rx_ctl.
+        # _resolve_same_system_candidates()), which otherwise has no live
+        # signal to prioritize candidates by.
+        "sort_order": row["sort_order"],
         # roaming_enabled/roaming_stale_seconds are SYSTEM-level
         # (systems table), joined in above -- LEFT JOIN means a site
         # with no system_id gets NULL/None here, which p25_system

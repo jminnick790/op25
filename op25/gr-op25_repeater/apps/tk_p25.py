@@ -93,6 +93,28 @@ ROAM_VOICE_DEBOUNCE_COUNT = 3
 # thrash an ~2*ROAM_SCOUT_WINDOW_SECONDS audible attempt+revert cycle back
 # to back indefinitely.
 ROAM_DIRECT_COOLDOWN_SECONDS = 15.0
+# Cold-start roaming (see rx_ctl._is_cold_start()/_resolve_same_system_candidates()) --
+# recovers a system that has NEVER achieved CC sync since this worker booted (e.g.
+# the box was power-cycled out of range of its assigned/last-roamed-to site), which
+# _is_degraded()'s last_tsbk>0 guard and _resolve_candidates()'s adjacent_data
+# dependency both structurally cannot detect or resolve for: adjacent_data is only
+# ever populated by decoding broadcasts FROM a site's own control channel, which by
+# definition never happened for a site that's never synced. Gated on elapsed time
+# since worker start (rx_ctl.roam_startup_time, set once in __init__), not
+# per-assignment tracking -- once a system decodes anything, last_tsbk stays > 0
+# forever (never reset), so this condition can only recur after a fresh boot.
+ROAM_COLD_START_GRACE_SECONDS = 120.0  # Field data showed a legitimately-reachable
+                                        # site taking up to ~75s for first lock in
+                                        # some conditions -- this must be comfortably
+                                        # longer than that or it misfires on ordinary
+                                        # slow-but-working boots.
+ROAM_COLD_START_COOLDOWN_SECONDS = 30.0  # Give-up cooldown once single-dongle mode's
+                                          # cold-start cycle exhausts every same-system
+                                          # candidate. Its own constant, not a reuse of
+                                          # ROAM_DIRECT_COOLDOWN_SECONDS: that value is
+                                          # sized around one fixed 2-leg attempt+revert
+                                          # cycle, while cold-start cycling's own cost
+                                          # scales with however many sites the system has.
 
 #################
 # Helper functions
@@ -217,6 +239,12 @@ class rx_ctl(object):
         self.scout_candidates = []
         self.scout_window_start = 0.0
         self.roam_last_check = 0.0
+        self.roam_startup_time = time.time()  # see _is_cold_start()
+        # Carries the reason ('voice_ber' | 'cc_stale' | 'cold_start') that
+        # triggered the CURRENT scout cycle across its whole lifetime, so
+        # every event logged mid-cycle (not just the initial scout_start)
+        # can be tagged with why it started -- see start_scout()/evaluate_scout().
+        self.scout_reason = None
         # Single-dongle roaming (see _roam_tick_direct()/_start_direct()/
         # _direct_retarget()/_evaluate_direct()) -- the alternate state
         # machine used instead of the scout_* fields above when
@@ -231,6 +259,23 @@ class rx_ctl(object):
         self.direct_roam_window_start = 0.0
         self.direct_roam_tsbk_baseline = 0
         self.direct_roam_cooldown_until = 0.0  # see ROAM_DIRECT_COOLDOWN_SECONDS
+        # Single-dongle COLD-START roaming (see _is_cold_start()/_start_direct_cold()/
+        # _direct_cold_next()/_evaluate_direct_cold()) -- a deliberately separate flow
+        # from direct_roam_* above, not a reuse of its 'attempt'/'revert' two-leg
+        # semantics: that flow tries exactly ONE candidate because something is
+        # presently working and every extra audible gap has a real cost. During a
+        # cold start nothing is working yet (by definition -- last_tsbk is still 0),
+        # so there's nothing to protect from interruption, and this can reasonably
+        # cycle the FULL same-system candidate list the way scout mode's
+        # _scout_next() does, just applied to the primary receiver directly instead
+        # of a background scout.
+        self.direct_cold_phase = None          # None | 'cycle'
+        self.direct_cold_home_system = None    # fixed for the cycle's lifetime -- exhaustion's revert target
+        self.direct_cold_candidates = []       # remaining same-system candidates, popped one at a time
+        self.direct_cold_current = None        # candidate currently tuned on the primary, or None between pops
+        self.direct_cold_window_start = 0.0
+        self.direct_cold_tsbk_baseline = 0
+        self.direct_cold_cooldown_until = 0.0  # see ROAM_COLD_START_COOLDOWN_SECONDS
         # Read by get_roam_events_json() on every "update" cycle and pushed
         # to the server for persistence (roam_events table) -- see
         # _log_roam_event(). Ephemeral stderr logging alone (the sys.stderr
@@ -442,6 +487,25 @@ class rx_ctl(object):
         stale_seconds = system.roaming_stale_seconds or ROAM_STALE_SECONDS_DEFAULT
         return system.last_tsbk > 0 and (curr_time - system.last_tsbk) >= stale_seconds
 
+    def _is_cold_start(self, system, curr_time):
+        # A system that has never achieved CC sync at all, ever, since this
+        # worker booted. Unlike _is_degraded(), which is deliberately
+        # guarded against firing on a system that "hasn't decoded anything
+        # yet (still starting up)", this is the mirror case: it ONLY fires
+        # once that startup grace period has genuinely elapsed with zero
+        # decodes -- see ROAM_COLD_START_GRACE_SECONDS. Once a system
+        # decodes anything even once, last_tsbk never resets to 0 (every
+        # self.last_tsbk assignment in this file is either the 0.0 init or
+        # a live time.time() in a decode handler), so this condition
+        # cannot recur for that system for the rest of this process's
+        # life -- normal _is_degraded() staleness monitoring takes over
+        # permanently from that point on. The two are mutually exclusive
+        # by construction: both of _is_degraded()'s branches require
+        # last_tsbk > 0 (voice_degraded needs an active call, which needs
+        # CC sync first), so whenever this returns True, _is_degraded()
+        # is guaranteed False for the same system/time, and vice versa.
+        return system.last_tsbk == 0.0 and (curr_time - self.roam_startup_time) >= ROAM_COLD_START_GRACE_SECONDS
+
     def _check_voice_degraded(self, curr_time):
         # Reads rx_sync::get_fec_stats_json()'s "voice.ber" field for the
         # PRIMARY receiver's current call, once a tick, and debounces it
@@ -500,6 +564,45 @@ class rx_ctl(object):
             candidates.append(candidate)
         return candidates
 
+    def _resolve_same_system_candidates(self, home_system):
+        # Cold-start fallback used ONLY when _resolve_candidates()'s
+        # adjacent_data path is structurally guaranteed empty (see
+        # _is_cold_start()'s comment: adjacent_data is only ever populated
+        # inside decode_tsbk()/decode_mbt_data()/decode_tdma_msg(), which by
+        # definition never ran for a system that's never synced). Falls
+        # back to every OTHER already-configured site sharing home_system's
+        # group_system_id -- i.e. every other site of the same logical
+        # network the admin already set up -- since there's no
+        # live-observed adjacency data to prioritize by instead. Same-
+        # system-only, same as _resolve_candidates(): never crosses into a
+        # different configured system, for the same reason (talkgroups/
+        # whitelist/blacklist are system-level).
+        #
+        # Reads self.systems directly (not neighbor_map, which is frozen at
+        # worker startup), so this also picks up sites added live via
+        # add_site() without a restart -- actually more current than the
+        # adjacency path it's standing in for.
+        if home_system.group_system_id is None:
+            return []
+        candidates = []
+        with self.systems_mutex:
+            for group in self.systems.values():
+                system = group['system']
+                if system is None or system is home_system:
+                    continue
+                if system.group_system_id != home_system.group_system_id:
+                    continue
+                candidates.append(system)
+        # sort_order is the admin's own configured display/preference
+        # ordering for sites (schema.sql's sites.sort_order, drag-to-
+        # reorder) -- the closest thing to a deliberate priority hint
+        # available with zero live signal to go on. Falls back to 0 (then
+        # sysname) for any config path that doesn't carry it (e.g. legacy
+        # JSON-fallback mode), and the sysname tiebreak makes the whole
+        # ordering fully deterministic regardless of dict iteration order.
+        candidates.sort(key=lambda s: (s.config.get('sort_order') or 0, s.sysname))
+        return candidates
+
     def roam_tick(self, curr_time):
         if curr_time < self.roam_last_check + ROAM_CHECK_INTERVAL:
             return
@@ -520,11 +623,18 @@ class rx_ctl(object):
 
         if self.scout_current is not None:
             # A scout cycle is already in progress for self.scout_home_system.
+            # Checks whichever condition actually started this cycle -- NOT
+            # just _is_degraded(): a cold-start-triggered cycle's home
+            # system has last_tsbk == 0 throughout, which makes
+            # _is_degraded() unconditionally False (its own guard), so
+            # checking only that would misread "never started degraded in
+            # the first place" as "just recovered" and abort a cold-start
+            # cycle on its very next tick.
             home_rx = self.scout_home_rx
-            if home_rx is not None and not self._is_degraded(home_rx.system, curr_time):
+            if home_rx is not None and not (self._is_degraded(home_rx.system, curr_time) or self._is_cold_start(home_rx.system, curr_time)):
                 if self.debug >= 5:
                     sys.stderr.write("%s [roam] %s recovered on its own, aborting scout\n" % (log_ts.get(), home_rx.system.sysname))
-                self._log_roam_event(home_rx.system, 'recovered')
+                self._log_roam_event(home_rx.system, 'recovered', detail=self.scout_reason)
                 self._abort_scout()
                 return
             if curr_time >= self.scout_window_start + ROAM_SCOUT_WINDOW_SECONDS:
@@ -540,19 +650,24 @@ class rx_ctl(object):
         home_system = home_rx.system
         if not home_system.roaming_enabled:
             return
-        if not self._is_degraded(home_system, curr_time):
+        if self._is_cold_start(home_system, curr_time):
+            candidates = self._resolve_same_system_candidates(home_system)
+            reason = 'cold_start'
+        elif self._is_degraded(home_system, curr_time):
+            candidates = self._resolve_candidates(home_system)
+            reason = 'voice_ber' if home_system.voice_degraded else 'cc_stale'
+        else:
             return
-        reason = 'voice_ber' if home_system.voice_degraded else 'cc_stale'
-        self.start_scout(home_system, home_rx, curr_time, reason)
+        self.start_scout(home_system, home_rx, curr_time, candidates, reason)
 
-    def start_scout(self, home_system, home_rx, curr_time, reason='unknown'):
+    def start_scout(self, home_system, home_rx, curr_time, candidates, reason='unknown'):
         self._log_roam_event(home_system, 'scout_start', detail=reason)
-        candidates = self._resolve_candidates(home_system)
         if not candidates:
             if self.debug >= 5:
-                sys.stderr.write("%s [roam] %s degraded but no resolvable neighbor candidates -- staying put\n" % (log_ts.get(), home_system.sysname))
-            self._log_roam_event(home_system, 'no_candidates')
+                sys.stderr.write("%s [roam] %s degraded but no resolvable candidates -- staying put\n" % (log_ts.get(), home_system.sysname))
+            self._log_roam_event(home_system, 'no_candidates', detail=reason)
             return
+        self.scout_reason = reason
         self.scout_home_system = home_system
         self.scout_home_rx = home_rx
         self.scout_candidates = candidates
@@ -570,7 +685,7 @@ class rx_ctl(object):
             # retry from scratch (fresh candidate list) on the next trigger.
             if self.debug >= 5:
                 sys.stderr.write("%s [roam] exhausted neighbor candidates for %s, none good enough\n" % (log_ts.get(), self.scout_home_system.sysname))
-            self._log_roam_event(self.scout_home_system, 'exhausted')
+            self._log_roam_event(self.scout_home_system, 'exhausted', detail=self.scout_reason)
             self._abort_scout()
             return
 
@@ -594,6 +709,7 @@ class rx_ctl(object):
         self.scout_home_system = None
         self.scout_home_rx = None
         self.scout_candidates = []
+        self.scout_reason = None
 
     def evaluate_scout(self, curr_time):
         candidate = self.scout_current
@@ -605,7 +721,8 @@ class rx_ctl(object):
             return
         if self.debug >= 5:
             sys.stderr.write("%s [roam] %s scouted, not good enough (tsbks=%d)\n" % (log_ts.get(), candidate.sysname, decoded))
-        self._log_roam_event(self.scout_home_system, 'scout_reject', to_site=candidate.sysname, detail=f"tsbks={decoded}")
+        self._log_roam_event(self.scout_home_system, 'scout_reject', to_site=candidate.sysname,
+                              detail=f"{self.scout_reason} tsbks={decoded}")
         self._scout_next(curr_time)
 
     def commit_roam(self, candidate, curr_time):
@@ -616,7 +733,7 @@ class rx_ctl(object):
 
         if self.debug >= 1:
             sys.stderr.write("%s [roam] handing off %s -> %s\n" % (log_ts.get(), home_system.sysname, candidate.sysname))
-        self._log_roam_event(home_system, 'commit', to_site=candidate.sysname)
+        self._log_roam_event(home_system, 'commit', to_site=candidate.sysname, detail=self.scout_reason)
 
         # The scout proved this candidate out (likely already synced to it)
         # -- release its CC claim first so the primary can take over the
@@ -641,6 +758,7 @@ class rx_ctl(object):
         self.scout_home_system = None
         self.scout_home_rx = None
         self.scout_candidates = []
+        self.scout_reason = None
 
     # -------------------------------------------------- single-dongle roaming --
     # Used instead of everything above when roam_tick() finds no scout channel
@@ -672,17 +790,28 @@ class rx_ctl(object):
         # the receiver this mode operates on.
         self._check_voice_degraded(curr_time)
 
+        if self.direct_cold_phase is not None:
+            if curr_time >= self.direct_cold_window_start + ROAM_SCOUT_WINDOW_SECONDS:
+                self._evaluate_direct_cold(curr_time)
+            return
+
         if self.direct_roam_phase is not None:
             if curr_time >= self.direct_roam_window_start + ROAM_SCOUT_WINDOW_SECONDS:
                 self._evaluate_direct(curr_time)
             return
 
-        if curr_time < self.direct_roam_cooldown_until:
-            return  # gave up recently -- see ROAM_DIRECT_COOLDOWN_SECONDS
-
         home_system = primary_rx.system
         if not home_system.roaming_enabled:
             return
+
+        if self._is_cold_start(home_system, curr_time):
+            if curr_time < self.direct_cold_cooldown_until:
+                return
+            self._start_direct_cold(home_system, primary_rx, curr_time)
+            return
+
+        if curr_time < self.direct_roam_cooldown_until:
+            return  # gave up recently -- see ROAM_DIRECT_COOLDOWN_SECONDS
         if not self._is_degraded(home_system, curr_time):
             return
         reason = 'voice_ber' if home_system.voice_degraded else 'cc_stale'
@@ -703,24 +832,28 @@ class rx_ctl(object):
         if self.debug >= 5:
             sys.stderr.write("%s [roam] single-dongle: trying %s (candidate for %s)\n" % (log_ts.get(), candidate.sysname, home_system.sysname))
         self._direct_retarget(primary_rx, candidate, curr_time)
+        self.direct_roam_target_system = candidate
+        self.direct_roam_tsbk_baseline = candidate.stats['tsbk_count']
+        self.direct_roam_window_start = curr_time
 
     def _direct_retarget(self, primary_rx, target_system, curr_time):
         # Mirrors commit_roam()'s primary-retarget sequence (release old CC
         # claim, retarget, tune) -- applied here to a not-yet-proven target
-        # instead of an already-scouted one.
+        # instead of an already-scouted one. Purely mechanical -- callers
+        # (both the degraded-path attempt/revert legs and the cold-start
+        # cycle below) set their OWN window/baseline bookkeeping right after
+        # calling this, since those two flows track state in different
+        # fields and this function has no business writing into either.
         old_system = primary_rx.system
         old_system.release_cc(self.primary_msgq_id)
         primary_rx.retarget(target_system)
         # Not optional: process_qmsg() routes incoming TSBK/MBT messages by
         # this field, not by primary_rx.system directly -- without updating
         # it, target_system.last_tsbk/stats['tsbk_count'] never advance no
-        # matter how good the candidate actually is, and _evaluate_direct()
+        # matter how good the candidate actually is, and the "good" check
         # would always see it as bad.
         self.receivers[self.primary_msgq_id]['sysname'] = target_system.sysname
         primary_rx.tune_cc(target_system.get_cc(self.primary_msgq_id))
-        self.direct_roam_target_system = target_system
-        self.direct_roam_tsbk_baseline = target_system.stats['tsbk_count']
-        self.direct_roam_window_start = curr_time
 
     def _evaluate_direct(self, curr_time):
         target = self.direct_roam_target_system
@@ -763,6 +896,9 @@ class rx_ctl(object):
             self.direct_roam_phase = 'revert'
             self._log_roam_event(self.direct_roam_home_system, 'scout_start', to_site=revert_target.sysname, detail="single_dongle:revert")
             self._direct_retarget(primary_rx, revert_target, curr_time)
+            self.direct_roam_target_system = revert_target
+            self.direct_roam_tsbk_baseline = revert_target.stats['tsbk_count']
+            self.direct_roam_window_start = curr_time
             return
 
         # Revert leg also failed -- give up for this cycle. Deliberately do
@@ -786,6 +922,95 @@ class rx_ctl(object):
         self.direct_roam_target_system = None
         self.direct_roam_window_start = 0.0
         self.direct_roam_tsbk_baseline = 0
+
+    # ---------------------------------------- single-dongle cold-start roaming --
+    # See _is_cold_start()/direct_cold_* fields' comment in __init__ for why this
+    # is a deliberately separate flow from _start_direct()/_evaluate_direct()
+    # above: nothing is working yet during a cold start, so there's nothing to
+    # protect from interruption, and this cycles the FULL same-system candidate
+    # list (mirroring scout mode's _scout_next()) instead of one attempt+revert.
+
+    def _start_direct_cold(self, home_system, primary_rx, curr_time):
+        candidates = self._resolve_same_system_candidates(home_system)
+        if not candidates:
+            self._log_roam_event(home_system, 'no_candidates', detail="single_dongle:cold_start")
+            self.direct_cold_cooldown_until = curr_time + ROAM_COLD_START_COOLDOWN_SECONDS
+            return
+        self._log_roam_event(home_system, 'scout_start', detail="single_dongle:cold_start")
+        self.direct_cold_phase = 'cycle'
+        self.direct_cold_home_system = home_system
+        self.direct_cold_candidates = candidates
+        self._direct_cold_next(primary_rx, curr_time)
+
+    def _direct_cold_next(self, primary_rx, curr_time):
+        if not self.direct_cold_candidates:
+            # Exhausted every same-system candidate with nothing decodable.
+            # Unlike the degraded path's exhaustion (which always ends up back
+            # on home, since there are only ever two legs), explicitly
+            # retarget back to home_system here rather than leaving the
+            # receiver parked on the last unproven candidate tried:
+            # get_active_channels_json() reports primary_rx.system.sysname
+            # unconditionally on every poll (no "was this proven" gate), and
+            # persist_state() writes that straight into
+            # channels.trunking_system_id -- leaving it on an unproven
+            # candidate risks persisting a bogus assignment before the next
+            # restart. Reverting to home keeps the DB-recorded intent correct
+            # and lets the receiver's own pre-existing CC-timeout hunt
+            # (timeout_cc()->next_cc()) keep trying home's own alternate
+            # frequencies at zero new code, same reasoning already
+            # established for the degraded path's exhaustion.
+            if self.debug >= 5:
+                sys.stderr.write("%s [roam] single-dongle cold-start: exhausted candidates for %s, reverting\n" %
+                                  (log_ts.get(), self.direct_cold_home_system.sysname))
+            self._log_roam_event(self.direct_cold_home_system, 'exhausted', detail="single_dongle:cold_start")
+            self._direct_retarget(primary_rx, self.direct_cold_home_system, curr_time)
+            self.direct_cold_cooldown_until = curr_time + ROAM_COLD_START_COOLDOWN_SECONDS
+            self._reset_direct_cold()
+            return
+
+        candidate = self.direct_cold_candidates.pop(0)
+        self.direct_cold_current = candidate
+        if self.debug >= 5:
+            sys.stderr.write("%s [roam] single-dongle cold-start: trying %s (candidate for %s)\n" %
+                              (log_ts.get(), candidate.sysname, self.direct_cold_home_system.sysname))
+        self._direct_retarget(primary_rx, candidate, curr_time)
+        self.direct_cold_tsbk_baseline = candidate.stats['tsbk_count']
+        self.direct_cold_window_start = curr_time
+
+    def _evaluate_direct_cold(self, curr_time):
+        candidate = self.direct_cold_current
+        decoded = candidate.stats['tsbk_count'] - self.direct_cold_tsbk_baseline
+        good = candidate.last_tsbk > 0 and (curr_time - candidate.last_tsbk) < ROAM_SCOUT_WINDOW_SECONDS \
+            and decoded >= ROAM_MIN_TSBK_COUNT
+
+        primary_entry = self.receivers.get(self.primary_msgq_id)
+        primary_rx = primary_entry['rx_rcvr'] if primary_entry else None
+        if primary_rx is None:
+            self._reset_direct_cold()
+            return
+
+        if good:
+            if self.debug >= 1:
+                sys.stderr.write("%s [roam] single-dongle cold-start: handing off %s -> %s\n" %
+                                  (log_ts.get(), self.direct_cold_home_system.sysname, candidate.sysname))
+            self._log_roam_event(self.direct_cold_home_system, 'commit', to_site=candidate.sysname, detail="single_dongle:cold_start")
+            self._reset_direct_cold()
+            return
+
+        if self.debug >= 5:
+            sys.stderr.write("%s [roam] single-dongle cold-start: %s not good enough (tsbks=%d), trying next\n" %
+                              (log_ts.get(), candidate.sysname, decoded))
+        self._log_roam_event(self.direct_cold_home_system, 'scout_reject', to_site=candidate.sysname,
+                              detail="single_dongle:cold_start tsbks=%d" % decoded)
+        self._direct_cold_next(primary_rx, curr_time)
+
+    def _reset_direct_cold(self):
+        self.direct_cold_phase = None
+        self.direct_cold_home_system = None
+        self.direct_cold_candidates = []
+        self.direct_cold_current = None
+        self.direct_cold_window_start = 0.0
+        self.direct_cold_tsbk_baseline = 0
 
     # ui_command handles all requests from user interface
     def ui_command(self, cmd, data, msgq_id):

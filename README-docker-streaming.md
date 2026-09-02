@@ -220,6 +220,22 @@ retry take over. Same `roam_events` log either way (tagged
 `single_dongle` in the `detail` field so the two modes are distinguishable
 after the fact).
 
+**Booted out of range of the site it was on?** Roaming also recovers from
+a cold start -- if the primary receiver never achieves control-channel
+sync at all (e.g. the box got moved or stored somewhere and power-cycled
+out of range of its assigned/last-roamed-to site), that's invisible to the
+degradation checks above (both require the system to have worked at some
+point already), so a separate trigger fires after a longer grace period
+(2 minutes, comfortably past normal first-lock time) and tries every other
+already-configured site of the *same* system -- not a different one --
+in turn. Scout mode cycles the full list in the background same as usual;
+single-dongle mode also cycles the full list here rather than its normal
+one-candidate-then-revert policy, since there's nothing currently playing
+to interrupt during a cold start. If nothing in the system works, it gives
+up after a cooldown and tries again, rather than hammering retunes
+forever. Logged the same way as any other roam, tagged `cold_start` in
+`detail`.
+
 ## Out of scope for now
 
 Tailscale setup itself, recording, and MQTT/Home Assistant integration are
