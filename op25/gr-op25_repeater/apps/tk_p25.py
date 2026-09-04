@@ -85,14 +85,24 @@ ROAM_VOICE_DEBOUNCE_COUNT = 3
 # the scout-channel machinery above when a roaming_enabled system has no
 # scout channel configured at all. Every attempt retargets the ONE primary
 # receiver directly (a real audible gap, unlike scout mode's silent
-# background evaluation), so unlike scout mode it tries exactly one
-# candidate and reverts on failure rather than cycling a list. Giving up
-# (both the attempt and the revert failed) starts this cooldown before the
+# background evaluation), so it cycles every resolvable real neighbor
+# candidate, same as scout mode, with the site being left appended as the
+# LAST item tried rather than an automatic first fallback -- reverting
+# immediately after one failed candidate would declare "recovered" the
+# instant CC sync came back, without ever re-checking whether the audio
+# that triggered the roam in the first place was actually still bad (a
+# voice-BER trigger specifically never implies CC staleness on the site
+# being left -- see _evaluate_direct()). Giving up (every real candidate
+# AND the final home re-check all failed) starts this cooldown before the
 # same system can re-trigger -- without it, a genuinely CC-stale home site
 # would re-trigger the fallback signal on the very next 1-second tick and
-# thrash an ~2*ROAM_SCOUT_WINDOW_SECONDS audible attempt+revert cycle back
-# to back indefinitely.
-ROAM_DIRECT_COOLDOWN_SECONDS = 15.0
+# thrash the whole cycle back to back indefinitely. Sized for
+# (N_real_candidates + 1) legs at up to ROAM_SCOUT_WINDOW_SECONDS +
+# ROAM_CHECK_INTERVAL each; _resolve_candidates() is bounded by on-air-
+# observed adjacency (not total configured sites, unlike cold-start's
+# whole-system list below), so ~6 plausible real neighbors is a reasonable
+# worst case: (6+1) * (3.0+1.0) = 28s minimum -- 45s keeps a margin.
+ROAM_DIRECT_COOLDOWN_SECONDS = 45.0
 # Cold-start roaming (see rx_ctl._is_cold_start()/_resolve_same_system_candidates()) --
 # recovers a system that has NEVER achieved CC sync since this worker booted (e.g.
 # the box was power-cycled out of range of its assigned/last-roamed-to site), which
@@ -251,24 +261,32 @@ class rx_ctl(object):
         # scout_msgq_id is None. Prefixed direct_roam_ (never scout_) to
         # keep this visibly distinct even though the two modes never run
         # concurrently on one rx_ctl (exactly one path runs, decided fresh
-        # each tick by whether a scout channel exists).
-        self.direct_roam_phase = None          # None | 'attempt' | 'revert'
-        self.direct_roam_home_system = None    # fixed for the excursion's lifetime -- used for event from_site/system_id
-        self.direct_roam_prior_system = None    # the revert target -- always == home_system, since there are only ever two legs
+        # each tick by whether a scout channel exists). Kept as its own
+        # field set, separate from direct_cold_* below, even though both are
+        # now list-cycling shapes -- different candidate sources with
+        # different locking needs (_resolve_candidates(), adjacency-based,
+        # lock-free vs. _resolve_same_system_candidates(), whole-system,
+        # needs systems_mutex) and different completion semantics
+        # (cold-start's home is never in its own list and reaching it is
+        # always failure; this flow's home is deliberately the LAST list
+        # item, and reaching it successfully is a valid, distinct outcome).
+        self.direct_roam_phase = None          # None | 'cycle'
+        self.direct_roam_home_system = None    # fixed for the cycle's lifetime -- used for event from_site/system_id, and appended as the final candidate
+        self.direct_roam_candidates = []       # remaining real candidates, home appended last, popped one at a time
         self.direct_roam_target_system = None  # whichever system is being evaluated on the primary right now
         self.direct_roam_window_start = 0.0
         self.direct_roam_tsbk_baseline = 0
         self.direct_roam_cooldown_until = 0.0  # see ROAM_DIRECT_COOLDOWN_SECONDS
         # Single-dongle COLD-START roaming (see _is_cold_start()/_start_direct_cold()/
         # _direct_cold_next()/_evaluate_direct_cold()) -- a deliberately separate flow
-        # from direct_roam_* above, not a reuse of its 'attempt'/'revert' two-leg
-        # semantics: that flow tries exactly ONE candidate because something is
-        # presently working and every extra audible gap has a real cost. During a
-        # cold start nothing is working yet (by definition -- last_tsbk is still 0),
-        # so there's nothing to protect from interruption, and this can reasonably
-        # cycle the FULL same-system candidate list the way scout mode's
-        # _scout_next() does, just applied to the primary receiver directly instead
-        # of a background scout.
+        # from direct_roam_* above, not a reuse of its state: this flow's home is
+        # never a real candidate (cold-start has no known-good site to protect --
+        # last_tsbk is still 0 by definition), so reaching exhaustion always means
+        # explicitly reverting to home rather than "home was the last candidate and
+        # it happened to succeed" (see _direct_cold_next()'s exhaustion branch).
+        # Same same-system whole-list candidate source as scout mode's
+        # _scout_next(), just applied to the primary receiver directly instead of a
+        # background scout.
         self.direct_cold_phase = None          # None | 'cycle'
         self.direct_cold_home_system = None    # fixed for the cycle's lifetime -- exhaustion's revert target
         self.direct_cold_candidates = []       # remaining same-system candidates, popped one at a time
@@ -777,7 +795,10 @@ class rx_ctl(object):
     # Reuses _resolve_candidates()/_is_degraded()/_check_voice_degraded()/
     # _log_roam_event() verbatim from the scout-mode code above, and
     # evaluate_scout()'s exact "good" formula (see _evaluate_direct()) --
-    # deliberately not a second, differently-tuned quality signal.
+    # deliberately not a second, differently-tuned quality signal. Cycles
+    # every resolvable real candidate (mirroring cold-start's list-cycling
+    # below), with the site being left appended as the final item rather
+    # than tried as an automatic first fallback -- see _start_direct().
 
     def _roam_tick_direct(self, curr_time):
         primary_entry = self.receivers.get(self.primary_msgq_id) if self.primary_msgq_id is not None else None
@@ -820,30 +841,33 @@ class rx_ctl(object):
     def _start_direct(self, home_system, primary_rx, curr_time, reason='unknown'):
         candidates = self._resolve_candidates(home_system)
         if not candidates:
+            # No real alternative to try -- the primary is already on home,
+            # so cycling a single-item [home_system] list would just be a
+            # pointless release/retarget/retune back onto the identical
+            # frequency it's already tuned to. Give up immediately, same as
+            # before this fix.
             if self.debug >= 5:
                 sys.stderr.write("%s [roam] %s degraded but no resolvable neighbor candidates -- staying put\n" % (log_ts.get(), home_system.sysname))
             self._log_roam_event(home_system, 'no_candidates', detail="single_dongle:%s" % reason)
             return
-        candidate = candidates[0]   # exactly one attempt per trigger -- see the module comment above
-        self._log_roam_event(home_system, 'scout_start', to_site=candidate.sysname, detail="single_dongle:%s" % reason)
-        self.direct_roam_phase = 'attempt'
+        # Home goes LAST -- only re-checked after every real candidate has
+        # already failed, never as an automatic first fallback. See the
+        # ROAM_DIRECT_COOLDOWN_SECONDS module comment for why.
+        self._log_roam_event(home_system, 'scout_start', detail="single_dongle:%s" % reason)
+        self.direct_roam_phase = 'cycle'
         self.direct_roam_home_system = home_system
-        self.direct_roam_prior_system = home_system
-        if self.debug >= 5:
-            sys.stderr.write("%s [roam] single-dongle: trying %s (candidate for %s)\n" % (log_ts.get(), candidate.sysname, home_system.sysname))
-        self._direct_retarget(primary_rx, candidate, curr_time)
-        self.direct_roam_target_system = candidate
-        self.direct_roam_tsbk_baseline = candidate.stats['tsbk_count']
-        self.direct_roam_window_start = curr_time
+        self.direct_roam_candidates = candidates + [home_system]
+        self._direct_roam_next(primary_rx, curr_time)
 
     def _direct_retarget(self, primary_rx, target_system, curr_time):
         # Mirrors commit_roam()'s primary-retarget sequence (release old CC
         # claim, retarget, tune) -- applied here to a not-yet-proven target
         # instead of an already-scouted one. Purely mechanical -- callers
-        # (both the degraded-path attempt/revert legs and the cold-start
-        # cycle below) set their OWN window/baseline bookkeeping right after
-        # calling this, since those two flows track state in different
-        # fields and this function has no business writing into either.
+        # (both this flow's _direct_roam_next() and the cold-start cycle's
+        # _direct_cold_next() below) set their OWN window/baseline
+        # bookkeeping right after calling this, since those two flows track
+        # state in different fields and this function has no business
+        # writing into either.
         old_system = primary_rx.system
         old_system.release_cc(self.primary_msgq_id)
         primary_rx.retarget(target_system)
@@ -855,8 +879,25 @@ class rx_ctl(object):
         self.receivers[self.primary_msgq_id]['sysname'] = target_system.sysname
         primary_rx.tune_cc(target_system.get_cc(self.primary_msgq_id))
 
+    def _direct_roam_next(self, primary_rx, curr_time):
+        # Mirrors _direct_cold_next()'s pop-and-retarget shape. Unlike that
+        # function, direct_roam_candidates is never empty here on entry --
+        # _start_direct() only ever begins a cycle with at least one real
+        # candidate plus home, and _evaluate_direct() below only calls this
+        # again after popping leaves at least the home entry still present
+        # (home itself is evaluated via the 'is this home' branch there, not
+        # by running out of list here).
+        candidate = self.direct_roam_candidates.pop(0)
+        self.direct_roam_target_system = candidate
+        if self.debug >= 5:
+            sys.stderr.write("%s [roam] single-dongle: trying %s (candidate for %s)\n" % (log_ts.get(), candidate.sysname, self.direct_roam_home_system.sysname))
+        self._direct_retarget(primary_rx, candidate, curr_time)
+        self.direct_roam_tsbk_baseline = candidate.stats['tsbk_count']
+        self.direct_roam_window_start = curr_time
+
     def _evaluate_direct(self, curr_time):
         target = self.direct_roam_target_system
+        is_home = target is self.direct_roam_home_system
         decoded = target.stats['tsbk_count'] - self.direct_roam_tsbk_baseline
         good = target.last_tsbk > 0 and (curr_time - target.last_tsbk) < ROAM_SCOUT_WINDOW_SECONDS \
             and decoded >= ROAM_MIN_TSBK_COUNT
@@ -868,49 +909,54 @@ class rx_ctl(object):
             return
 
         if good:
-            if self.direct_roam_phase == 'attempt':
+            if not is_home:
                 if self.debug >= 1:
                     sys.stderr.write("%s [roam] single-dongle: handing off %s -> %s\n" % (log_ts.get(), self.direct_roam_home_system.sysname, target.sysname))
                 self._log_roam_event(self.direct_roam_home_system, 'commit', to_site=target.sysname, detail="single_dongle")
             else:
-                # Reverted back to the original home and it's decoding fine
-                # again -- nothing was actually handed off, just recovered.
-                # 'recovered' is the closest fit in roam_events' fixed
-                # vocabulary (see docker/config/schema.sql's CHECK
-                # constraint -- an unrecognized event string is silently
-                # dropped by the server's INSERT OR IGNORE, not rejected
-                # loudly, so reusing an existing type is required, not just
-                # tidy); the revert_ok marker in detail keeps this
-                # distinguishable from a scout-mode self-recovery.
+                # Every real candidate failed and the site being left is
+                # decoding fine again on this final re-check -- nothing was
+                # actually handed off, just recovered. 'recovered' is the
+                # closest fit in roam_events' fixed vocabulary (see
+                # docker/config/schema.sql's CHECK constraint -- an
+                # unrecognized event string is silently dropped by the
+                # server's INSERT OR IGNORE, not rejected loudly, so reusing
+                # an existing type is required, not just tidy).
+                # cycle_exhausted_ok (not revert_ok) marks that this is the
+                # NEW, more thorough outcome -- home was reached only after
+                # every real alternative already failed, not as an
+                # immediate first fallback. Note this re-check still only
+                # measures CC sync/TSBK decode, same as every other
+                # candidate -- it does NOT re-verify voice quality even for
+                # a voice-BER-triggered roam, since p25_receiver.retarget()
+                # resets current_tgid on every leg, which forces
+                # _check_voice_degraded() to clear voice_degraded until a
+                # fresh call happens to occur within this window. Trying
+                # every real candidate first (this fix) substantially
+                # reduces how often that gap matters, but doesn't close it.
                 if self.debug >= 5:
-                    sys.stderr.write("%s [roam] single-dongle: reverted to %s, recovered\n" % (log_ts.get(), target.sysname))
-                self._log_roam_event(self.direct_roam_home_system, 'recovered', detail="single_dongle:revert_ok tsbks=%d" % decoded)
+                    sys.stderr.write("%s [roam] single-dongle: cycle exhausted, %s recovered\n" % (log_ts.get(), target.sysname))
+                self._log_roam_event(self.direct_roam_home_system, 'recovered', detail="single_dongle:cycle_exhausted_ok tsbks=%d" % decoded)
             self._reset_direct()
             return
 
-        if self.direct_roam_phase == 'attempt':
+        if not is_home:
             if self.debug >= 5:
-                sys.stderr.write("%s [roam] single-dongle: %s not good enough (tsbks=%d), reverting\n" % (log_ts.get(), target.sysname, decoded))
+                sys.stderr.write("%s [roam] single-dongle: %s not good enough (tsbks=%d), trying next\n" % (log_ts.get(), target.sysname, decoded))
             self._log_roam_event(self.direct_roam_home_system, 'scout_reject', to_site=target.sysname, detail="single_dongle tsbks=%d" % decoded)
-            revert_target = self.direct_roam_prior_system   # always the original home -- only two legs ever exist
-            self.direct_roam_phase = 'revert'
-            self._log_roam_event(self.direct_roam_home_system, 'scout_start', to_site=revert_target.sysname, detail="single_dongle:revert")
-            self._direct_retarget(primary_rx, revert_target, curr_time)
-            self.direct_roam_target_system = revert_target
-            self.direct_roam_tsbk_baseline = revert_target.stats['tsbk_count']
-            self.direct_roam_window_start = curr_time
+            self._direct_roam_next(primary_rx, curr_time)
             return
 
-        # Revert leg also failed -- give up for this cycle. Deliberately do
-        # NOT idle_rx()/release_cc() here: leaving the receiver tuned and
-        # CC-claimed on whatever the revert leg landed on lets its own
-        # pre-existing channel-timeout retry (see the module comment above)
-        # take over and hunt that system's own alternate CC frequencies,
-        # with zero new hunting code needed. Idling instead would just let
-        # check_cc_assignments() retune to the exact same still-bad
-        # frequency, since nothing there advances cc_index.
+        # Home itself, tried last, also failed -- give up for this cycle.
+        # Deliberately do NOT idle_rx()/release_cc() here: leaving the
+        # receiver tuned and CC-claimed on home lets its own pre-existing
+        # channel-timeout retry (see the module comment above) take over and
+        # hunt home's own alternate CC frequencies, with zero new hunting
+        # code needed. Idling instead would just let check_cc_assignments()
+        # retune to the exact same still-bad frequency, since nothing there
+        # advances cc_index.
         if self.debug >= 5:
-            sys.stderr.write("%s [roam] single-dongle: revert to %s also not good enough (tsbks=%d), giving up for now\n" % (log_ts.get(), target.sysname, decoded))
+            sys.stderr.write("%s [roam] single-dongle: %s (home) also not good enough (tsbks=%d), giving up for now\n" % (log_ts.get(), target.sysname, decoded))
         self._log_roam_event(self.direct_roam_home_system, 'exhausted', detail="single_dongle tsbks=%d" % decoded)
         self.direct_roam_cooldown_until = curr_time + ROAM_DIRECT_COOLDOWN_SECONDS
         self._reset_direct()
@@ -918,7 +964,7 @@ class rx_ctl(object):
     def _reset_direct(self):
         self.direct_roam_phase = None
         self.direct_roam_home_system = None
-        self.direct_roam_prior_system = None
+        self.direct_roam_candidates = []
         self.direct_roam_target_system = None
         self.direct_roam_window_start = 0.0
         self.direct_roam_tsbk_baseline = 0

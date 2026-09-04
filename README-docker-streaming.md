@@ -210,15 +210,23 @@ automatically falls back to a single-dongle mode instead of doing nothing.
 No separate setting for this; it's purely inferred from whether a scout
 channel exists. The tradeoff is real: with no second receiver to evaluate
 a candidate silently, the one receiver you have retargets directly onto
-the best neighbor for a few seconds to prove it out -- a genuine, audible
-gap in live audio, unlike scout mode's make-before-break handoff. If that
-candidate doesn't pan out, it retargets straight back to whatever it was
-on before trying, rather than hunting through every configured
-alternative; if the site it started on is *also* not decoding, it gives
-up for a short cooldown and lets the receiver's normal control-channel
-retry take over. Same `roam_events` log either way (tagged
-`single_dongle` in the `detail` field so the two modes are distinguishable
-after the fact).
+each neighbor in turn for a few seconds to prove it out -- a genuine,
+audible gap in live audio per candidate, unlike scout mode's
+make-before-break handoff. It tries every resolvable real neighbor before
+giving up, with the site it's leaving tried *last* -- not as an immediate
+automatic fallback -- since a site can still hold control-channel sync
+while its audio has already degraded (the reason roaming triggered in the
+first place), and reverting to it first would falsely declare "recovered"
+without ever re-checking that. If every neighbor and the original site all
+fail, it gives up for a longer cooldown and lets the receiver's normal
+control-channel retry take over. One known limitation even after this: the
+retune itself resets the receiver's call state, so the very last
+recheck -- of the site being left -- still can't perfectly re-verify audio
+quality unless a call happens to key up again in that short window; trying
+every real alternative first (rather than reverting immediately) is what
+meaningfully reduces how often that residual gap actually matters. Same
+`roam_events` log either way (tagged `single_dongle` in the `detail` field
+so the two modes are distinguishable after the fact).
 
 **Booted out of range of the site it was on?** Roaming also recovers from
 a cold start -- if the primary receiver never achieves control-channel
